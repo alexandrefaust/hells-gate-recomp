@@ -226,7 +226,7 @@ inline void OnEndVertices(const uint8_t* base) {
     if (log) TraceExit(g_slot_##addr, ctx, saved);                                  \
   }
 
-// Draw hooks also feed the M2 observer (native_observer.cpp).
+// Draw hooks also feed the state verifier (state_verifier.cpp).
 #define D3D_DRAW_HOOK_AFTER(addr, label, kind, after)                               \
   REX_EXTERN(__imp__sub_##addr);                                                    \
   static TraceSlot g_slot_##addr{label, 0x##addr, 6, 0, 0, 0};                      \
@@ -345,7 +345,7 @@ REX_HOOK_RAW(sub_827D4148) {
   if (ctx.r3.u32) renderer::AfterCommandBufferReserve(ctx.r3.u32);
 }
 
-// Swap ends the frame for both the trace and the observer.
+// Swap ends the frame for both the trace and the state verifier.
 REX_EXTERN(__imp__sub_827D4EE0);
 static TraceSlot g_slot_827D4EE0{"Swap", 0x827D4EE0, 6, 0, 4, 16};
 static SlotRegistrar g_reg_827D4EE0{&g_slot_827D4EE0};

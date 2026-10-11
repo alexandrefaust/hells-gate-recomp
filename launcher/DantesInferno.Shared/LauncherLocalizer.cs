@@ -4,8 +4,7 @@ using System.Collections.Generic;
 namespace DantesInferno
 {
     /// <summary>
-    /// Provides localized strings for the launcher UI.
-    /// Supported languages: English (en), Spanish (es), Portuguese (pt), French (fr), Italian (it).
+    /// Launcher and installer UI text.
     /// </summary>
     public static class LauncherLocalizer
     {
@@ -25,7 +24,6 @@ namespace DantesInferno
             { "it", "Italiano" },
         };
 
-        // String keys used throughout the launcher.
         public const string
             TabPlay = "tab_play",
             TabDlc = "tab_dlc",
@@ -859,23 +857,19 @@ namespace DantesInferno
         }
 
         /// <summary>
-        /// Returns the localized string for the given key, or the key itself if not found.
+        /// Falls back to English, then to the key itself.
         /// </summary>
         public static string Get(string language, string key)
         {
             if (_translations.TryGetValue(language, out var lang) &&
                 lang.TryGetValue(key, out var value) && !string.IsNullOrEmpty(value))
                 return value;
-            // Fallback to English
             if (_translations.TryGetValue(DefaultLanguage, out var en) &&
                 en.TryGetValue(key, out var enValue))
                 return enValue;
             return key;
         }
 
-        /// <summary>
-        /// Returns the localized string formatted with the given args.
-        /// </summary>
         public static string Get(string language, string key, params object[] args)
         {
             string template = Get(language, key);
@@ -884,7 +878,7 @@ namespace DantesInferno
         }
 
         /// <summary>
-        /// Normalizes a language code to one of the supported languages.
+        /// A supported language code for a code or display name, else English.
         /// </summary>
         public static string NormalizeLanguage(string language)
         {
@@ -893,7 +887,6 @@ namespace DantesInferno
             string lang = language.ToLowerInvariant();
             if (SupportedLanguages.Contains(lang))
                 return lang;
-            // Handle full names / aliases
             if (lang == "italian" || lang == "italiano")
                 return "it";
             foreach (var kvp in LanguageDisplayNames)

@@ -457,7 +457,7 @@ RenderTarget* GetRenderTarget(const SurfaceDesc& s) {
   return &rt;
 }
 
-// `scale`: of the render target resolved into it.
+// `scale` is the scale of the render target being resolved.
 ResolveTarget* GetResolveTarget(uint32_t address, uint32_t width, uint32_t height,
                               uint32_t guest_format, uint32_t slice, Scale scale) {
   ResolveTargetKey key{address, width, height, guest_format, slice};
@@ -646,7 +646,7 @@ struct LoadedShader {
 LoadedShader g_loaded_vs;
 // Pixel shader microcode of the last draw with a D3D pixel shader set.
 GuestShaderCode g_last_ps;
-// Index buffer of the last submitted draw (M2 observer cross-check).
+// Index buffer of the last submitted draw (checked by the state verifier).
 uint32_t g_last_index_base = 0, g_last_index_count = 0, g_last_index_format = 0;
 bool g_in_program_flush = false;
 // Draws and resolves since the last swap (frame recorder log).
@@ -856,7 +856,7 @@ GuestShaderCode PixelShaderCode(const uint8_t* base, uint32_t dev) {
 }
 
 // The draw packet ends the command-buffer range the D3D call wrote (dev+48 =
-// last dword, verified by M2). PM4 type-3 DRAW_INDX (0x22): [hdr][viz]
+// last dword, checked with the state verifier). PM4 type-3 DRAW_INDX (0x22): [hdr][viz]
 // [initiator][dma base][dma size] for indexed, [hdr][viz][initiator] otherwise;
 // DRAW_INDX_2 (0x36): [hdr][initiator].
 bool ParseDrawPacket(const uint8_t* base, uint32_t dev, uint32_t& initiator, uint32_t& dma_base,
@@ -1263,8 +1263,6 @@ void Stop() {
   REXLOG_INFO("DanteDevice: stopped after {} frames", g_frame);
 }
 
-// Clear(count, pRects, flags, color, Z, stencil): flags TARGET0..3 = bits 0-3,
-// ZBUFFER = 0x10, STENCIL = 0x20; color is D3DCOLOR (ARGB).
 void LastIndexBuffer(uint32_t& base, uint32_t& count, uint32_t& format) {
   base = g_last_index_base;
   count = g_last_index_count;
@@ -1277,6 +1275,8 @@ void BoundShaderHashes(uint32_t dev, const uint8_t* base, uint64_t& vs, uint64_t
   ps = p.ucode ? XXH3_64bits(p.ucode, p.dwords * 4) : 0;
 }
 
+// Clear(count, pRects, flags, color, Z, stencil): flags TARGET0..3 = bits 0-3,
+// ZBUFFER = 0x10, STENCIL = 0x20; color is D3DCOLOR (ARGB).
 void AfterClear(const CallArgs& a, const uint8_t* base) {
   std::lock_guard lock(g_mutex);
   if (!g_device) return;

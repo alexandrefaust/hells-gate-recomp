@@ -396,9 +396,9 @@ Pipeline* DrawRenderer::Impl::GetPipeline(const PipelineKey& key, const Translat
   }
   gp.DSVFormat = dl::TEXTURE_FORMAT(key.depth_format);
   gp.PrimitiveTopology = dl::PRIMITIVE_TOPOLOGY(key.topology);
-  // Final framebuffer coordinates match the SDK Vulkan backend (the Y flip
-  // DiligentCore applies is undone in the NDC transform), so are its rules:
-  // front face clockwise if PA_SU_SC_MODE_CNTL.face.
+  // Framebuffer coordinates match the SDK Vulkan backend (the NDC transform
+  // undoes DiligentCore's Y flip), so its winding rule applies too: the front
+  // face is clockwise if PA_SU_SC_MODE_CNTL.face is set.
   gp.RasterizerDesc.CullMode = (key.cull & 1)   ? dl::CULL_MODE_FRONT
                                : (key.cull & 2) ? dl::CULL_MODE_BACK
                                                 : dl::CULL_MODE_NONE;

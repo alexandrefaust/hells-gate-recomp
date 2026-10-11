@@ -91,7 +91,7 @@ if(DANTESINFERNO_NATIVE_RENDERER)
     # The SDK's Vulkan stack (REXGLUE_USE_VULKAN) brings its own glslang /
     # SPIRV-Headers targets whose names collide with DiligentCore's vendored
     # copies (target names are global). DiligentCore is therefore built without
-    # glslang/SPIRV-Tools; HLSL is compiled to SPIR-V at runtime via the SDK's
+    # glslang/SPIRV-Tools; GLSL is compiled to SPIR-V at runtime with the SDK's
     # glslang in vulkan_device.cpp instead.
     set(DILIGENT_NO_GLSLANG ON CACHE BOOL "Disable glslang in DiligentCore" FORCE)
 
@@ -198,7 +198,7 @@ if(DANTESINFERNO_NATIVE_RENDERER)
         # GDI renders the button glyph labels (button_glyphs.cpp).
         target_link_libraries(dante_renderer PRIVATE gdi32)
 
-        # glslang for runtime HLSL->SPIR-V compilation in vulkan_device.cpp
+        # glslang for runtime GLSL->SPIR-V compilation in vulkan_device.cpp
         # (DiligentCore is built with DILIGENT_NO_GLSLANG). ResourceLimits.cpp
         # provides glslang::DefaultTBuiltInResource, normally built by glslang's
         # StandAlone dir which ENABLE_GLSLANG_BINARIES=OFF skips.

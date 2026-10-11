@@ -38,9 +38,8 @@
 #endif
 
 REXCVAR_DEFINE_INT32(verify_gpu_state_frames, 0, "Diagnostics",
-                     "M2 shadow observer: decode the guest D3D register shadow at "
-                     "each draw for the next N frames and cross-check it against "
-                     "the Xenos register file")
+                     "Rebuild the GPU state of each draw from the D3D device for the "
+                     "next N frames and compare it with the Xenos register file")
     .range(0, 100);
 
 namespace renderer {
