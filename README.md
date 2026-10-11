@@ -58,6 +58,7 @@ GPU.
 **Input**
 - Mouse and keyboard with rebindable keys
 - Xbox and PlayStation controllers through SDL3 (XInput also available)
+- Button prompts match the device in use: Xbox, PlayStation or your keyboard / mouse bindings
 
 **Launcher**
 - One-click installer that extracts your ISO
@@ -243,7 +244,7 @@ The executable is `out/build/linux-release/dantes_inferno`.
 | High refresh rate (up to 240 FPS) | ✅ Done |
 | Native renderer (`--renderer=dante`) | ✅ Default; still being refined |
 | SMAA, higher-resolution shadows | ✅ Done |
-| Button glyphs (Xbox / PlayStation) | 🔜 Planned |
+| Button glyphs (Xbox / PlayStation / keyboard) | ✅ Done |
 | Trials of Saint Lucia online server | 🔬 In development ([research](docs/trials_online_server_emulator.md)) |
 
 ## 📚 Documentation
@@ -254,7 +255,6 @@ The executable is `out/build/linux-release/dantes_inferno`.
 | [Native D3D map](docs/NATIVE_D3D_MAP.md) | The game's Direct3D entry points |
 | [Frame rate](docs/frame_rate.md) | How high refresh rates are made to work |
 | [VP6 FMV fix](docs/vp6_fmv_corruption_fix.md) | Video corruption root cause and fix |
-| [Ultrawide research](docs/ultrawide_research.md) | Aspect ratio hooks |
 | [Linux cross-compile](docs/linux-cross-compile.md) | Building on Linux, running under Proton |
 | [ReXGlue notes](docs/rexglue_notes.md) | SDK notes and patches |
 | [Trials online emulator](docs/trials_online_server_emulator.md) | DLC online research |

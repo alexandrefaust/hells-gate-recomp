@@ -150,21 +150,17 @@ card) with zero visible corruption.
 
 ## 4. Graphics/quality cvars actually available
 
-Cross-referenced against `docs/improvements_plan.md`'s cvar survey (accurate
-- matches what's in `thirdparty/rexglue-sdk/src/graphics/` and `src/ui/`).
 Two things worth calling out for the Linux setup specifically:
 
 - **GPU cvars must be CLI flags, same class of issue as `game_data_root`,
   different cause:** `resolution_scale`, `anisotropic_override`,
   `swap_post_effect`, etc. live inside `rexgpu-xenos.dll`, which isn't loaded
   until *after* `OnPreSetup()` returns - so `rex::cvar::SetFlagByName()`
-  calls made from `OnPreSetup` (as `improvements_plan.md §2.7` suggests)
-  silently fail because the cvar doesn't exist yet. CLI args work because
+  calls made from `OnPreSetup` silently fail because the cvar doesn't exist yet. CLI args work because
   `cvar::Init()` stashes unrecognized `--name=value` pairs as pending values,
   applied automatically once the owning plugin registers the cvar later - a
   TOML-file value has no equivalent pending-application mechanism for cvars
-  not yet registered at `LoadConfig()` time. (`REXCVAR_SET()`, used elsewhere
-  in that doc, may go through the same pending-value path as CLI args rather
+  not yet registered at `LoadConfig()` time. (`REXCVAR_SET()` may go through the same pending-value path as CLI args rather
   than `SetFlagByName()`'s immediate-only one - not verified here, but worth
   checking before relying on `OnPreSetup` to configure these.)
 - **FidelityFX (CAS/FSR) is off by default** (`-DREXGLUE_ENABLE_FIDELITYFX=ON`

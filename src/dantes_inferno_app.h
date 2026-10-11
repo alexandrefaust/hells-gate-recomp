@@ -253,8 +253,6 @@ class DantesInfernoApp : public rex::ReXApp {
         REXLOG_INFO("DLC-MOD: dumped guest image to {}", dump_path.string());
       }
     }
-
-    SeedShaderStorage();
   }
 
   void OnPostSetup() override {
@@ -542,33 +540,6 @@ class DantesInfernoApp : public rex::ReXApp {
   }
 
  private:
-  void SeedShaderStorage() {
-    const std::filesystem::path bundled =
-        rex::filesystem::GetExecutableFolder() / "shader_cache";
-    std::error_code ec;
-    if (!std::filesystem::is_directory(bundled, ec) ||
-        runtime()->cache_root().empty()) {
-      return;
-    }
-    const std::filesystem::path shareable =
-        runtime()->cache_root() / "shaders" / "shareable";
-    std::filesystem::create_directories(shareable, ec);
-    uint32_t seeded = 0;
-    for (const auto& entry :
-         std::filesystem::directory_iterator(bundled, ec)) {
-      if (!entry.is_regular_file()) continue;
-      const std::filesystem::path dst = shareable / entry.path().filename();
-      if (std::filesystem::exists(dst, ec)) continue;
-      if (std::filesystem::copy_file(entry.path(), dst, ec) && !ec) {
-        ++seeded;
-      }
-    }
-    if (seeded) {
-      REXLOG_INFO("Seeded {} shader cache file(s) into {}", seeded,
-                  shareable.string());
-    }
-  }
-
   rex::graphics::CommandProcessor* GetCommandProcessor() {
     auto* gfx_sys = runtime() ? runtime()->graphics_system() : nullptr;
     if (auto* dante_sys =
