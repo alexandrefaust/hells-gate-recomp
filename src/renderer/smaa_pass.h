@@ -7,16 +7,14 @@ struct ITexture;
 }
 
 namespace renderer {
-class VulkanDevice;
-}
 
-namespace renderer {
+class VulkanDevice;
 
 // SMAA 1x (Jimenez et al.) applied in place to a color render target: luma
 // edge detection, blending weights, neighborhood blending.
 class SmaaPass {
  public:
-  explicit SmaaPass(renderer::VulkanDevice* device);
+  explicit SmaaPass(VulkanDevice* device);
   ~SmaaPass();
 
   // Anti-aliases `color` (render target + shader resource). False when the

@@ -1,7 +1,6 @@
 #include "draw_renderer.h"
 
 #include "guest_memory.h"
-
 #include "render_stats.h"
 #include "texture_cache.h"
 
@@ -27,17 +26,16 @@
 #include <rex/graphics/xenos.h>
 #include <rex/logging/macros.h>
 
+#include <fmt/format.h>
 #include <xxhash.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <map>
 #include <set>
 #include <string>
 #include <string_view>
-
-#include <fmt/format.h>
-#include <map>
 #include <unordered_map>
 #include <vector>
 
@@ -51,6 +49,7 @@ namespace xenos = rex::graphics::xenos;
 using Translator = rg::SpirvShaderTranslator;
 
 constexpr uint32_t kIndexRingSize = 32u * 1024 * 1024;
+
 struct PipelineKey {
   uint64_t vertex_key;
   uint64_t pixel_key;
@@ -69,6 +68,9 @@ struct PipelineKey {
   int32_t depth_bias;         // constant depth bias (host units)
   uint32_t depth_bias_slope;  // slope-scaled depth bias (float bits)
   bool operator==(const PipelineKey&) const = default;
+};
+struct PipelineKeyHash {
+  size_t operator()(const PipelineKey& k) const { return XXH3_64bits(&k, sizeof(k)); }
 };
 
 dl::BLEND_FACTOR BlendFactor(xenos::BlendFactor f, bool alpha) {
@@ -124,9 +126,6 @@ dl::STENCIL_OP StencilOp(xenos::StencilOp op) {
 dl::COMPARISON_FUNCTION Compare(xenos::CompareFunction f) {
   return dl::COMPARISON_FUNCTION(uint32_t(f) + 1);
 }
-struct PipelineKeyHash {
-  size_t operator()(const PipelineKey& k) const { return XXH3_64bits(&k, sizeof(k)); }
-};
 
 // Texture / sampler variables of a pipeline, parsed from the translator's
 // names: xe_texture{fc}_{2d|3d|cube}_{s|u}, xe_sampler{fc}_{mag}{min}{mip}[_a{N}].
@@ -155,7 +154,8 @@ bool ParseSamplerName(std::string_view name, SamplerVariable& out) {
   if (pos == std::string_view::npos) return false;
   pos += 10;
   uint32_t fc = 0;
-  while (pos < name.size() && name[pos] >= '0' && name[pos] <= '9') fc = fc * 10 + (name[pos++] - '0');
+  while (pos < name.size() && name[pos] >= '0' && name[pos] <= '9')
+    fc = fc * 10 + (name[pos++] - '0');
   if (pos + 4 > name.size() || name[pos] != '_') return false;
   auto filter = [](char c) -> uint32_t { return c == 'p' ? 0 : c == 'l' ? 1 : c == 'b' ? 2 : 3; };
   out.fetch_constant = fc;
@@ -164,7 +164,7 @@ bool ParseSamplerName(std::string_view name, SamplerVariable& out) {
   out.mip = filter(name[pos + 3]);
   out.aniso = 7;  // kUseFetchConst
   pos += 4;
-  if (pos + 2 < name.size() + 1 && name.substr(pos, 2) == "_a") {
+  if (pos + 2 <= name.size() && name.substr(pos, 2) == "_a") {
     uint32_t n = 0;
     for (pos += 2; pos < name.size() && name[pos] >= '0' && name[pos] <= '9'; ++pos) {
       n = n * 10 + (name[pos] - '0');
@@ -253,14 +253,15 @@ bool DrawRenderer::Impl::Initialize() {
   index.Usage = dl::USAGE_DEFAULT;
   device->CreateBuffer(index, nullptr, &index_ring);
 
-  system_constants.Attach(CreateUniform("XenosSystemConstants", sizeof(Translator::SystemConstants)));
+  system_constants.Attach(
+      CreateUniform("XenosSystemConstants", sizeof(Translator::SystemConstants)));
   float_vertex.Attach(CreateUniform("XenosFloatVS", 256 * 16));
   float_pixel.Attach(CreateUniform("XenosFloatPS", 256 * 16));
   bool_loop.Attach(CreateUniform("XenosBoolLoop", (8 + 32) * 4));
   fetch.Attach(CreateUniform("XenosFetch", 6 * 32 * 4));
 
   // Missing / unsupported textures read zero, like the SDK's null images.
-  const uint32_t white[6] = {};
+  const uint32_t zero[6] = {};
   auto make_dummy = [&](dl::RESOURCE_DIMENSION dim, uint32_t layers,
                         dl::RefCntAutoPtr<dl::ITexture>& out) {
     dl::TextureDesc desc;
@@ -276,7 +277,7 @@ bool DrawRenderer::Impl::Initialize() {
     desc.Format = dl::TEX_FORMAT_RGBA8_UNORM;
     desc.BindFlags = dl::BIND_SHADER_RESOURCE;
     desc.Usage = dl::USAGE_IMMUTABLE;
-    std::vector<dl::TextureSubResData> subresources(layers, dl::TextureSubResData{white, 4});
+    std::vector<dl::TextureSubResData> subresources(layers, dl::TextureSubResData{zero, 4});
     dl::TextureData data{subresources.data(), layers};
     device->CreateTexture(desc, &data, &out);
   };
@@ -364,7 +365,8 @@ void DrawRenderer::Impl::BindStatic(Pipeline& pipeline, dl::SHADER_TYPE stage) {
   }
 }
 
-Pipeline* DrawRenderer::Impl::GetPipeline(const PipelineKey& key, const TranslatedShaders& shaders) {
+Pipeline* DrawRenderer::Impl::GetPipeline(const PipelineKey& key,
+                                          const TranslatedShaders& shaders) {
   auto it = pipelines.find(key);
   if (it != pipelines.end()) return it->second.pso ? &it->second : nullptr;
   Pipeline& p = pipelines[key];
@@ -419,17 +421,18 @@ Pipeline* DrawRenderer::Impl::GetPipeline(const PipelineKey& key, const Translat
     ds.StencilWriteMask = uint8_t(key.stencil_masks >> 8);
     ds.FrontFace = {StencilOp(dc.stencilfail), StencilOp(dc.stencilzfail),
                     StencilOp(dc.stencilzpass), Compare(dc.stencilfunc)};
-    ds.BackFace = dc.backface_enable
-                      ? dl::StencilOpDesc{StencilOp(dc.stencilfail_bf), StencilOp(dc.stencilzfail_bf),
-                                          StencilOp(dc.stencilzpass_bf), Compare(dc.stencilfunc_bf)}
-                      : ds.FrontFace;
+    ds.BackFace =
+        dc.backface_enable
+            ? dl::StencilOpDesc{StencilOp(dc.stencilfail_bf), StencilOp(dc.stencilzfail_bf),
+                                StencilOp(dc.stencilzpass_bf), Compare(dc.stencilfunc_bf)}
+            : ds.FrontFace;
   }
   device->CreateGraphicsPipelineState(ci, &p.pso);
   ++g_render_stats.pipelines_created;
   if (!p.pso) {
     if (++pipeline_failures <= 8) {
-      REXLOG_WARN("NATIVE-DRAW: pipeline failed VS {:016X} PS {:016X} topology {}",
-                  key.vertex_key, key.pixel_key, key.topology);
+      REXLOG_WARN("NATIVE-DRAW: pipeline failed VS {:016X} PS {:016X} topology {}", key.vertex_key,
+                  key.pixel_key, key.topology);
     }
     return nullptr;
   }
@@ -473,8 +476,12 @@ bool DrawRenderer::Draw(const rg::RegisterFile& regs, const TranslatedShaders& s
   switch (initiator.prim_type) {
     case xenos::PrimitiveType::kLineList: topology = dl::PRIMITIVE_TOPOLOGY_LINE_LIST; break;
     case xenos::PrimitiveType::kLineStrip: topology = dl::PRIMITIVE_TOPOLOGY_LINE_STRIP; break;
-    case xenos::PrimitiveType::kTriangleList: topology = dl::PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; break;
-    case xenos::PrimitiveType::kTriangleStrip: topology = dl::PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP; break;
+    case xenos::PrimitiveType::kTriangleList:
+      topology = dl::PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+      break;
+    case xenos::PrimitiveType::kTriangleStrip:
+      topology = dl::PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+      break;
     case xenos::PrimitiveType::kTriangleFan:
       topology = dl::PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
       fan = true;
@@ -489,16 +496,16 @@ bool DrawRenderer::Draw(const rg::RegisterFile& regs, const TranslatedShaders& s
       topology = dl::PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
       points = true;
       break;
-    default:
-      ++m.skipped_other;
-      return false;
+    default: ++m.skipped_other; return false;
   }
 
   // Vertex data the shader fetches, uploaded raw (big-endian) to the shared memory mirror.
   std::string vertex_log;
   for (const auto& binding : shaders.vertex_info->vertex_bindings()) {
-    uint32_t d0 = regs.values[rg::XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + binding.fetch_constant * 2];
-    uint32_t d1 = regs.values[rg::XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + binding.fetch_constant * 2 + 1];
+    uint32_t d0 =
+        regs.values[rg::XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + binding.fetch_constant * 2];
+    uint32_t d1 =
+        regs.values[rg::XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + binding.fetch_constant * 2 + 1];
     m.Upload(base, d0 & 0xFFFFFFFCu, ((d1 >> 2) & 0xFFFFFF) * 4,
              binding.fetch_constant == volatile_fetch);
     if (log) {
@@ -598,34 +605,26 @@ bool DrawRenderer::Draw(const rg::RegisterFile& regs, const TranslatedShaders& s
     m.index_ring_offset = (index_offset + bytes + 3) & ~3u;
   }
 
-  // Constants (SDK Vulkan backend layout).
-  {
-    dl::MapHelper<uint8_t> map(m.context, m.float_vertex, dl::MAP_WRITE, dl::MAP_FLAG_DISCARD);
+  // Constants (SDK Vulkan backend layout): the float constants a shader uses,
+  // packed in register order.
+  auto write_float_constants = [&](dl::IBuffer* buffer, const rg::SpirvShader& info,
+                                   uint32_t first_register) {
+    dl::MapHelper<uint8_t> map(m.context, buffer, dl::MAP_WRITE, dl::MAP_FLAG_DISCARD);
     uint8_t* out = map;
-    const auto& bitmap = shaders.vertex_info->constant_register_map().float_bitmap;
+    const auto& bitmap = info.constant_register_map().float_bitmap;
     for (uint32_t i = 0; i < 4; ++i) {
       uint64_t bits = bitmap[i];
       while (bits) {
         uint32_t c = uint32_t(__builtin_ctzll(bits));
         bits &= bits - 1;
-        std::memcpy(out, &regs.values[rg::XE_GPU_REG_SHADER_CONSTANT_000_X + (i << 8) + (c << 2)], 16);
+        std::memcpy(out, &regs.values[first_register + (i << 8) + (c << 2)], 16);
         out += 16;
       }
     }
-  }
+  };
+  write_float_constants(m.float_vertex, *shaders.vertex_info, rg::XE_GPU_REG_SHADER_CONSTANT_000_X);
   if (shaders.pixel_info) {
-    dl::MapHelper<uint8_t> map(m.context, m.float_pixel, dl::MAP_WRITE, dl::MAP_FLAG_DISCARD);
-    uint8_t* out = map;
-    const auto& bitmap = shaders.pixel_info->constant_register_map().float_bitmap;
-    for (uint32_t i = 0; i < 4; ++i) {
-      uint64_t bits = bitmap[i];
-      while (bits) {
-        uint32_t c = uint32_t(__builtin_ctzll(bits));
-        bits &= bits - 1;
-        std::memcpy(out, &regs.values[rg::XE_GPU_REG_SHADER_CONSTANT_256_X + (i << 8) + (c << 2)], 16);
-        out += 16;
-      }
-    }
+    write_float_constants(m.float_pixel, *shaders.pixel_info, rg::XE_GPU_REG_SHADER_CONSTANT_256_X);
   }
   {
     dl::MapHelper<uint8_t> map(m.context, m.bool_loop, dl::MAP_WRITE, dl::MAP_FLAG_DISCARD);
@@ -681,8 +680,8 @@ bool DrawRenderer::Draw(const rg::RegisterFile& regs, const TranslatedShaders& s
     if (regs.Get<reg::RB_DEPTH_INFO>().depth_format == xenos::DepthRenderTargetFormat::kD24FS8) {
       flags |= Translator::kSysFlag_DepthFloat24;
     }
-    auto alpha_func = colorcontrol.alpha_test_enable ? colorcontrol.alpha_func
-                                                     : xenos::CompareFunction::kAlways;
+    auto alpha_func =
+        colorcontrol.alpha_test_enable ? colorcontrol.alpha_func : xenos::CompareFunction::kAlways;
     flags |= uint32_t(alpha_func) << Translator::kSysFlag_AlphaPassIfLess_Shift;
     for (uint32_t i = 0; i < 4; ++i) {
       auto info = regs.Get<reg::RB_COLOR_INFO>(reg::RB_COLOR_INFO::rt_register_indices[i]);
@@ -745,7 +744,6 @@ bool DrawRenderer::Draw(const rg::RegisterFile& regs, const TranslatedShaders& s
     }
   }
 
-  // Pipeline.
   PipelineKey key{};
   key.vertex_key = shaders.vertex_key;
   key.pixel_key = shaders.pixel_key;
@@ -761,10 +759,9 @@ bool DrawRenderer::Draw(const rg::RegisterFile& regs, const TranslatedShaders& s
   key.depth_write = targets.depth && depth_control.z_write_enable;
   key.depth_func = uint32_t(depth_control.zfunc) + 1;  // xenos -> COMPARISON_FUNCTION
   for (uint32_t i = 0; i < key.color_count; ++i) {
-    static constexpr uint32_t kBlendRegs[4] = {rg::XE_GPU_REG_RB_BLENDCONTROL0,
-                                               rg::XE_GPU_REG_RB_BLENDCONTROL1,
-                                               rg::XE_GPU_REG_RB_BLENDCONTROL2,
-                                               rg::XE_GPU_REG_RB_BLENDCONTROL3};
+    static constexpr uint32_t kBlendRegs[4] = {
+        rg::XE_GPU_REG_RB_BLENDCONTROL0, rg::XE_GPU_REG_RB_BLENDCONTROL1,
+        rg::XE_GPU_REG_RB_BLENDCONTROL2, rg::XE_GPU_REG_RB_BLENDCONTROL3};
     uint32_t blend = regs.values[kBlendRegs[i]] & 0x1FFF1FFF;
     // 1 * src + 0 * dst for color and alpha = blending off.
     key.blend[i] = blend == 0x00010001 ? 0 : blend;
@@ -787,10 +784,10 @@ bool DrawRenderer::Draw(const rg::RegisterFile& regs, const TranslatedShaders& s
     float slope = 0.0f, constant = 0.0f;
     rg::draw_util::GetPreferredFacePolygonOffset(regs, rg::draw_util::IsPrimitivePolygonal(regs),
                                                  slope, constant);
-    constant *= regs.Get<reg::RB_DEPTH_INFO>().depth_format ==
-                        xenos::DepthRenderTargetFormat::kD24S8
-                    ? rg::draw_util::kD3D10PolygonOffsetFactorUnorm24
-                    : rg::draw_util::kD3D10PolygonOffsetFactorFloat24;
+    constant *=
+        regs.Get<reg::RB_DEPTH_INFO>().depth_format == xenos::DepthRenderTargetFormat::kD24S8
+            ? rg::draw_util::kD3D10PolygonOffsetFactorUnorm24
+            : rg::draw_util::kD3D10PolygonOffsetFactorFloat24;
     slope *= xenos::kPolygonOffsetScaleSubpixelUnit * std::max(scale_x, scale_y);
     key.depth_bias = int32_t(std::lround(constant));
     std::memcpy(&key.depth_bias_slope, &slope, sizeof(float));
@@ -814,9 +811,8 @@ bool DrawRenderer::Draw(const rg::RegisterFile& regs, const TranslatedShaders& s
     // The signed binding is only sampled for signed components.
     xenos::xe_gpu_texture_fetch_t fetch_constant;
     std::memcpy(&fetch_constant, fetch, sizeof(fetch_constant));
-    bool want_signed =
-        t.is_signed &&
-        rg::texture_util::IsAnySignSigned(rg::texture_util::SwizzleSigns(fetch_constant));
+    bool want_signed = t.is_signed && rg::texture_util::IsAnySignSigned(
+                                          rg::texture_util::SwizzleSigns(fetch_constant));
     dl::ITextureView* view =
         t.dimension == '3'   ? m.textures->GetView3D(fetch, base, m.frame, &source, want_signed)
         : t.dimension == 'c' ? m.textures->GetViewCube(fetch, base, m.frame, &source, want_signed)
@@ -837,9 +833,10 @@ bool DrawRenderer::Draw(const rg::RegisterFile& regs, const TranslatedShaders& s
     if (!view && !unused_binding &&
         m.missing_textures.insert((uint64_t(fetch[1]) << 32) | fetch[2]).second &&
         m.missing_textures.size() <= 64) {
-      REXLOG_INFO("NATIVE-TEX no texture for fetch {} ({}): {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}",
-                  t.fetch_constant, t.dimension, fetch[0], fetch[1], fetch[2], fetch[3], fetch[4],
-                  fetch[5]);
+      REXLOG_INFO(
+          "NATIVE-TEX no texture for fetch {} ({}): {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}",
+          t.fetch_constant, t.dimension, fetch[0], fetch[1], fetch[2], fetch[3], fetch[4],
+          fetch[5]);
     }
     if (fetch_constant.format == xenos::TextureFormat::k_8 && !t.is_signed) {
       ++video_planes;
@@ -924,13 +921,12 @@ bool DrawRenderer::Draw(const rg::RegisterFile& regs, const TranslatedShaders& s
         "ndc=({:.4f},{:.4f},{:.4f})+({:.4f},{:.4f},{:.4f}) scissor=({},{})-({},{}) rt={}x{} "
         "colors={} depth={} zfunc={} ztest={} mask={:04X} blend={:08X} vs={:016X} ps={:016X}{}{}",
         uint32_t(initiator.prim_type), count, indexed ? "dma" : "auto", indices.size(),
-        viewport.xy_offset[0], viewport.xy_offset[1], viewport.xy_extent[0],
-        viewport.xy_extent[1], viewport.z_min, viewport.z_max, viewport.ndc_scale[0],
-        viewport.ndc_scale[1], viewport.ndc_scale[2], viewport.ndc_offset[0],
-        viewport.ndc_offset[1], viewport.ndc_offset[2], rect.left, rect.top, rect.right,
-        rect.bottom, targets.width, targets.height, targets.color_count,
-        targets.depth != nullptr, key.depth_func, key.depth_enable, key.color_mask, key.blend[0],
-        shaders.vertex_info->ucode_data_hash(),
+        viewport.xy_offset[0], viewport.xy_offset[1], viewport.xy_extent[0], viewport.xy_extent[1],
+        viewport.z_min, viewport.z_max, viewport.ndc_scale[0], viewport.ndc_scale[1],
+        viewport.ndc_scale[2], viewport.ndc_offset[0], viewport.ndc_offset[1],
+        viewport.ndc_offset[2], rect.left, rect.top, rect.right, rect.bottom, targets.width,
+        targets.height, targets.color_count, targets.depth != nullptr, key.depth_func,
+        key.depth_enable, key.color_mask, key.blend[0], shaders.vertex_info->ucode_data_hash(),
         shaders.pixel_info ? shaders.pixel_info->ucode_data_hash() : 0, vertex_log, texture_log);
   }
   return true;
@@ -941,8 +937,8 @@ void DrawRenderer::LogStats() {
       "NATIVE-DRAW draws={} pipelines={} pipeline_failures={} skipped: other={} "
       "targets={} viewport={} scissor={} pipeline={} uploaded={} KB",
       impl_->draws, impl_->pipelines.size(), impl_->pipeline_failures, impl_->skipped_other,
-      impl_->skipped_targets, impl_->skipped_viewport,
-      impl_->skipped_scissor, impl_->skipped_pipeline, impl_->uploaded_bytes / 1024);
+      impl_->skipped_targets, impl_->skipped_viewport, impl_->skipped_scissor,
+      impl_->skipped_pipeline, impl_->uploaded_bytes / 1024);
 }
 
 }  // namespace renderer

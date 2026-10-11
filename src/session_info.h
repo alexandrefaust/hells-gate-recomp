@@ -16,8 +16,12 @@
 #include <thread>
 
 #ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <windows.h>
 #include <intrin.h>
 #endif
@@ -69,8 +73,7 @@ inline std::string DisplayMode() {
   DEVMODEW mode = {};
   mode.dmSize = sizeof(mode);
   if (!EnumDisplaySettingsW(nullptr, ENUM_CURRENT_SETTINGS, &mode)) return "unknown";
-  return fmt::format("{}x{} @ {} Hz", mode.dmPelsWidth, mode.dmPelsHeight,
-                     mode.dmDisplayFrequency);
+  return fmt::format("{}x{} @ {} Hz", mode.dmPelsWidth, mode.dmPelsHeight, mode.dmDisplayFrequency);
 }
 #endif
 
@@ -84,16 +87,15 @@ inline void Log() {
               std::thread::hardware_concurrency(), memory.ullTotalPhys >> 20);
   REXLOG_INFO("SESSION: primary display {}", DisplayMode());
 #endif
-  REXLOG_INFO("SESSION: renderer={} resolution={} aspect={} frame rate={} fullscreen={} "
-              "anisotropic={}",
-              rex::cvar::Query<std::string>("renderer"),
-              rex::cvar::Query<std::string>("dante_resolution"),
-              rex::cvar::Query<double>("ultrawide_target_aspect") > 0.0
-                  ? fmt::format("{:.4f}", rex::cvar::Query<double>("ultrawide_target_aspect"))
-                  : std::string("auto"),
-              rex::cvar::Query<double>("video_mode_refresh_rate"),
-              rex::cvar::Query<bool>("fullscreen"),
-              rex::cvar::Query<int32_t>("anisotropic_override"));
+  REXLOG_INFO(
+      "SESSION: renderer={} resolution={} aspect={} frame rate={} fullscreen={} "
+      "anisotropic={}",
+      rex::cvar::Query<std::string>("renderer"), rex::cvar::Query<std::string>("dante_resolution"),
+      rex::cvar::Query<double>("ultrawide_target_aspect") > 0.0
+          ? fmt::format("{:.4f}", rex::cvar::Query<double>("ultrawide_target_aspect"))
+          : std::string("auto"),
+      rex::cvar::Query<double>("video_mode_refresh_rate"), rex::cvar::Query<bool>("fullscreen"),
+      rex::cvar::Query<int32_t>("anisotropic_override"));
 }
 
 }  // namespace session_info

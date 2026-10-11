@@ -134,9 +134,7 @@ bool DumpTexturePng(dl::IRenderDevice* device, dl::IDeviceContext* context, dl::
           out[0] = out[1] = out[2] = v;
           break;
         }
-        default:
-          known = false;
-          break;
+        default: known = false; break;
       }
     }
   }
@@ -172,8 +170,8 @@ bool DumpTexturePng(dl::IRenderDevice* device, dl::IDeviceContext* context, dl::
   std::error_code ec;
   std::filesystem::create_directories(path.parent_path(), ec);
   bool ok = stbi_write_png(path.string().c_str(), int(w), int(h), 4, png.data(), int(w) * 4) != 0;
-  REXLOG_INFO("NATIVE-DUMP {} {}x{} fmt={} range={:.4f}..{:.4f} {}", path.filename().string(), w,
-              h, int(src.Format), lo, hi, ok ? "written" : "FAILED");
+  REXLOG_INFO("NATIVE-DUMP {} {}x{} fmt={} range={:.4f}..{:.4f} {}", path.filename().string(), w, h,
+              int(src.Format), lo, hi, ok ? "written" : "FAILED");
   return ok;
 }
 

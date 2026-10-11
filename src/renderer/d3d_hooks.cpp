@@ -1,18 +1,20 @@
-// Diagnostic hooks on the game's XDK D3D layer (docs/NATIVE_D3D_MAP.md). Each
-// hook logs its arguments for N frames and forwards to the original
-// __imp__sub_X; behaviour is unchanged. --d3d_trace_frames=N or F8 (3 frames).
-// Output: "D3D-TRACE" (calls), "D3D-OBJ" (first sighting of each object).
+// Hooks on the game's XDK D3D layer (docs/NATIVE_D3D_MAP.md). Every hook calls
+// the original __imp__sub_X; the draw, clear, resolve and swap hooks also
+// drive renderer=dante and the state verifier. --d3d_trace_frames=N (F8: 3
+// frames) logs the calls as "D3D-TRACE" and the first sighting of each object
+// as "D3D-OBJ".
+
+#include "guest_gpu_state.h"
+#include "renderdoc_capture.h"
+#include "renderer.h"
+#include "state_verifier.h"
 
 #include <rex/cvar.h>
 #include <rex/hook.h>
 #include <rex/logging/macros.h>
 #include <rex/ppc/context.h>
 
-#include "renderer.h"
-#include "guest_gpu_state.h"
-#include "state_verifier.h"
-#include "renderdoc_capture.h"
-
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -40,22 +42,23 @@ struct TraceSlot {
   std::atomic<uint32_t> frame_logged{0};
 };
 
+constexpr uint32_t kMaxSlots = 64;
 constexpr uint32_t kMaxDumpsPerSlot = 64;
 
 std::atomic<bool> g_tracing{false};
 std::atomic<uint32_t> g_frame_index{0};
 
-TraceSlot* g_slots[64];
+TraceSlot* g_slots[kMaxSlots];
 std::atomic<uint32_t> g_slot_count{0};
 
-// Key: (slot address << 32) | object address.
 std::mutex g_dump_mutex;
+// (slot address << 32) | object address of every object dumped.
 std::unordered_set<uint64_t> g_dumped;
 
 struct SlotRegistrar {
   explicit SlotRegistrar(TraceSlot* slot) {
     uint32_t index = g_slot_count.fetch_add(1);
-    if (index < 64) g_slots[index] = slot;
+    if (index < kMaxSlots) g_slots[index] = slot;
   }
 };
 
@@ -81,7 +84,7 @@ inline uint32_t ArgReg(const PPCContext& ctx, int reg) {
 }
 
 void DumpObject(const TraceSlot& slot, const uint8_t* base, uint32_t obj) {
-  if (obj < 0x10000u || obj >= 0xFFFF0000u) return;
+  if (!guest::IsPlausibleAddress(obj)) return;
   if (uint64_t(obj) + slot.dump_dwords * 4 + 0x1000 > 0x100000000ull) return;
   {
     std::lock_guard lock(g_dump_mutex);
@@ -99,8 +102,7 @@ void DumpObject(const TraceSlot& slot, const uint8_t* base, uint32_t obj) {
       line += fmt::format(" {:08X}", guest::Load32(base, obj + i * 4));
     }
     REXLOG_INFO("D3D-OBJ f{} {} obj={:08X} +{:03X}:{}",
-                g_frame_index.load(std::memory_order_relaxed), slot.label, obj,
-                row * 4, line);
+                g_frame_index.load(std::memory_order_relaxed), slot.label, obj, row * 4, line);
   }
 }
 
@@ -110,8 +112,7 @@ inline bool TraceEnter(TraceSlot& slot, const PPCContext& ctx, const uint8_t* ba
   slot.frame_calls.fetch_add(1, std::memory_order_relaxed);
   if (slot.dump_reg) DumpObject(slot, base, ArgReg(ctx, slot.dump_reg));
   if (slot.skip_null_reg && ArgReg(ctx, slot.skip_null_reg) == 0) return false;
-  if (slot.frame_logged.fetch_add(1, std::memory_order_relaxed) >=
-      slot.max_logged_per_frame) {
+  if (slot.frame_logged.fetch_add(1, std::memory_order_relaxed) >= slot.max_logged_per_frame) {
     return false;
   }
   for (int i = 0; i < 8; ++i) saved.r[i] = ArgReg(ctx, 3 + i);
@@ -126,17 +127,15 @@ inline void TraceExit(const TraceSlot& slot, const PPCContext& ctx, const SavedA
       "D3D-TRACE f{} {} [{:08X}] from {:08X}: r3={:08X} r4={:08X} r5={:08X} "
       "r6={:08X} r7={:08X} r8={:08X} r9={:08X} r10={:08X} f1={:.4f} f2={:.4f} "
       "-> r3={:08X}",
-      g_frame_index.load(std::memory_order_relaxed), slot.label, slot.guest_address,
-      a.lr, a.r[0], a.r[1], a.r[2], a.r[3], a.r[4], a.r[5], a.r[6], a.r[7], a.f1, a.f2,
-      ctx.r3.u32);
+      g_frame_index.load(std::memory_order_relaxed), slot.label, slot.guest_address, a.lr, a.r[0],
+      a.r[1], a.r[2], a.r[3], a.r[4], a.r[5], a.r[6], a.r[7], a.f1, a.f2, ctx.r3.u32);
 }
 
 void TraceFrameBoundary() {
   bool was_tracing = g_tracing.load(std::memory_order_relaxed);
   if (was_tracing) {
     uint32_t frame = g_frame_index.load(std::memory_order_relaxed);
-    uint32_t count = g_slot_count.load();
-    if (count > 64) count = 64;
+    uint32_t count = std::min(g_slot_count.load(), kMaxSlots);
     for (uint32_t i = 0; i < count; ++i) {
       TraceSlot* slot = g_slots[i];
       uint32_t calls = slot->frame_calls.exchange(0);
@@ -198,8 +197,8 @@ inline void OnEndVertices(const uint8_t* base) {
 
 #define D3D_TRACE_HOOK_EX(addr, label, max_logged, skip_null_reg, dump_reg, dump_dwords) \
   REX_EXTERN(__imp__sub_##addr);                                                         \
-  static TraceSlot g_slot_##addr{label,         0x##addr, max_logged,                    \
-                                 skip_null_reg, dump_reg, dump_dwords};                  \
+  static TraceSlot g_slot_##addr{                                                        \
+      label, 0x##addr, max_logged, skip_null_reg, dump_reg, dump_dwords};                \
   static SlotRegistrar g_reg_##addr{&g_slot_##addr};                                     \
   REX_HOOK_RAW(sub_##addr) {                                                             \
     SavedArgs saved;                                                                     \
@@ -211,67 +210,67 @@ inline void OnEndVertices(const uint8_t* base) {
 #define D3D_TRACE_HOOK(addr, label) D3D_TRACE_HOOK_EX(addr, label, 6, 0, 0, 0)
 
 // Traced hook whose arguments are handed to a renderer=dante handler after the original.
-#define D3D_NATIVE_HOOK(addr, label, max_logged, dump_reg, dump_dwords, handler)    \
-  REX_EXTERN(__imp__sub_##addr);                                                    \
+#define D3D_NATIVE_HOOK(addr, label, max_logged, dump_reg, dump_dwords, handler)         \
+  REX_EXTERN(__imp__sub_##addr);                                                         \
   static TraceSlot g_slot_##addr{label, 0x##addr, max_logged, 0, dump_reg, dump_dwords}; \
-  static SlotRegistrar g_reg_##addr{&g_slot_##addr};                                \
-  REX_HOOK_RAW(sub_##addr) {                                                        \
-    SavedArgs saved;                                                                \
-    bool log = TraceEnter(g_slot_##addr, ctx, base, saved);                         \
-    renderer::CallArgs args = CaptureArgs(ctx);                                       \
-    args.write_ptr_before = renderer::CommandBufferWritePtr(ctx.r3.u32, base);                 \
-    args.segment_switches_before = renderer::SegmentSwitchCount();                               \
-    __imp__sub_##addr(ctx, base);                                                   \
-    handler(args, base);                                                            \
-    if (log) TraceExit(g_slot_##addr, ctx, saved);                                  \
+  static SlotRegistrar g_reg_##addr{&g_slot_##addr};                                     \
+  REX_HOOK_RAW(sub_##addr) {                                                             \
+    SavedArgs saved;                                                                     \
+    bool log = TraceEnter(g_slot_##addr, ctx, base, saved);                              \
+    renderer::CallArgs args = CaptureArgs(ctx);                                          \
+    args.write_ptr_before = renderer::CommandBufferWritePtr(ctx.r3.u32, base);           \
+    args.segment_switches_before = renderer::SegmentSwitchCount();                       \
+    __imp__sub_##addr(ctx, base);                                                        \
+    handler(args, base);                                                                 \
+    if (log) TraceExit(g_slot_##addr, ctx, saved);                                       \
   }
 
 // Draw hooks also feed the state verifier (state_verifier.cpp).
-#define D3D_DRAW_HOOK_AFTER(addr, label, kind, after)                               \
-  REX_EXTERN(__imp__sub_##addr);                                                    \
-  static TraceSlot g_slot_##addr{label, 0x##addr, 6, 0, 0, 0};                      \
-  static SlotRegistrar g_reg_##addr{&g_slot_##addr};                                \
-  REX_HOOK_RAW(sub_##addr) {                                                        \
-    SavedArgs saved;                                                                \
-    bool log = TraceEnter(g_slot_##addr, ctx, base, saved);                         \
-    renderer::TrackDrawFlush(ctx.r3.u32, base);                                  \
-    if (g_draw_depth == 0) renderer::BeforeDraw(ctx.r3.u32, base);                   \
-    uint32_t ticket = renderer::ObserveDrawBegin(renderer::DrawKind::kind, ctx, base);  \
-    renderer::CallArgs draw_args = CaptureArgs(ctx);                                  \
-    ++g_draw_depth;                                                                 \
-    __imp__sub_##addr(ctx, base);                                                   \
-    --g_draw_depth;                                                                 \
-    if (g_draw_depth == 0) {                                                        \
-      renderer::AfterDraw(draw_args, renderer::DrawKind::kind, base);       \
-    }                                                                               \
-    renderer::ObserveDrawEnd(ticket, ctx, base);                                      \
-    after;                                                                          \
-    if (log) TraceExit(g_slot_##addr, ctx, saved);                                  \
+#define D3D_DRAW_HOOK_AFTER(addr, label, kind, after)                                  \
+  REX_EXTERN(__imp__sub_##addr);                                                       \
+  static TraceSlot g_slot_##addr{label, 0x##addr, 6, 0, 0, 0};                         \
+  static SlotRegistrar g_reg_##addr{&g_slot_##addr};                                   \
+  REX_HOOK_RAW(sub_##addr) {                                                           \
+    SavedArgs saved;                                                                   \
+    bool log = TraceEnter(g_slot_##addr, ctx, base, saved);                            \
+    renderer::TrackDrawFlush(ctx.r3.u32, base);                                        \
+    if (g_draw_depth == 0) renderer::BeforeDraw(ctx.r3.u32, base);                     \
+    uint32_t ticket = renderer::ObserveDrawBegin(renderer::DrawKind::kind, ctx, base); \
+    renderer::CallArgs draw_args = CaptureArgs(ctx);                                   \
+    ++g_draw_depth;                                                                    \
+    __imp__sub_##addr(ctx, base);                                                      \
+    --g_draw_depth;                                                                    \
+    if (g_draw_depth == 0) {                                                           \
+      renderer::AfterDraw(draw_args, renderer::DrawKind::kind, base);                  \
+    }                                                                                  \
+    renderer::ObserveDrawEnd(ticket, ctx, base);                                       \
+    after;                                                                             \
+    if (log) TraceExit(g_slot_##addr, ctx, saved);                                     \
   }
 #define D3D_DRAW_HOOK(addr, label, kind) D3D_DRAW_HOOK_AFTER(addr, label, kind, (void)0)
 
-#define D3D_TRACE_HOOK_AFTER(addr, label, after)                                    \
-  REX_EXTERN(__imp__sub_##addr);                                                    \
-  static TraceSlot g_slot_##addr{label, 0x##addr, 6, 0, 0, 0};                      \
-  static SlotRegistrar g_reg_##addr{&g_slot_##addr};                                \
-  REX_HOOK_RAW(sub_##addr) {                                                        \
-    SavedArgs saved;                                                                \
-    bool log = TraceEnter(g_slot_##addr, ctx, base, saved);                         \
-    __imp__sub_##addr(ctx, base);                                                   \
-    after;                                                                          \
-    if (log) TraceExit(g_slot_##addr, ctx, saved);                                  \
+#define D3D_TRACE_HOOK_AFTER(addr, label, after)               \
+  REX_EXTERN(__imp__sub_##addr);                               \
+  static TraceSlot g_slot_##addr{label, 0x##addr, 6, 0, 0, 0}; \
+  static SlotRegistrar g_reg_##addr{&g_slot_##addr};           \
+  REX_HOOK_RAW(sub_##addr) {                                   \
+    SavedArgs saved;                                           \
+    bool log = TraceEnter(g_slot_##addr, ctx, base, saved);    \
+    __imp__sub_##addr(ctx, base);                              \
+    after;                                                     \
+    if (log) TraceExit(g_slot_##addr, ctx, saved);             \
   }
 
-#define D3D_TRACE_HOOK_BEFORE(addr, label, before)                                  \
-  REX_EXTERN(__imp__sub_##addr);                                                    \
-  static TraceSlot g_slot_##addr{label, 0x##addr, 6, 0, 0, 0};                      \
-  static SlotRegistrar g_reg_##addr{&g_slot_##addr};                                \
-  REX_HOOK_RAW(sub_##addr) {                                                        \
-    SavedArgs saved;                                                                \
-    bool log = TraceEnter(g_slot_##addr, ctx, base, saved);                         \
-    before;                                                                         \
-    __imp__sub_##addr(ctx, base);                                                   \
-    if (log) TraceExit(g_slot_##addr, ctx, saved);                                  \
+#define D3D_TRACE_HOOK_BEFORE(addr, label, before)             \
+  REX_EXTERN(__imp__sub_##addr);                               \
+  static TraceSlot g_slot_##addr{label, 0x##addr, 6, 0, 0, 0}; \
+  static SlotRegistrar g_reg_##addr{&g_slot_##addr};           \
+  REX_HOOK_RAW(sub_##addr) {                                   \
+    SavedArgs saved;                                           \
+    bool log = TraceEnter(g_slot_##addr, ctx, base, saved);    \
+    before;                                                    \
+    __imp__sub_##addr(ctx, base);                              \
+    if (log) TraceExit(g_slot_##addr, ctx, saved);             \
   }
 
 // Draws (TU2 copies at 0x8291xxxx).

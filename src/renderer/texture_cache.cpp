@@ -61,7 +61,8 @@ bool GetHostFormat(xenos::TextureFormat format, HostFormat& out) {
     case xenos::TextureFormat::k_8_8_8_8:
     case xenos::TextureFormat::k_8_8_8_8_A:
     case xenos::TextureFormat::k_8_8_8_8_AS_16_16_16_16:
-      out = {dl::TEX_FORMAT_RGBA8_UNORM, 4, dl::TEX_FORMAT_RGBA8_TYPELESS, dl::TEX_FORMAT_RGBA8_SNORM};
+      out = {dl::TEX_FORMAT_RGBA8_UNORM, 4, dl::TEX_FORMAT_RGBA8_TYPELESS,
+             dl::TEX_FORMAT_RGBA8_SNORM};
       return true;
     case xenos::TextureFormat::k_2_10_10_10:
     case xenos::TextureFormat::k_2_10_10_10_AS_16_16_16_16:
@@ -79,9 +80,7 @@ bool GetHostFormat(xenos::TextureFormat format, HostFormat& out) {
     case xenos::TextureFormat::k_DXT4_5_AS_16_16_16_16:
       out = {dl::TEX_FORMAT_BC3_UNORM, 16};
       return true;
-    case xenos::TextureFormat::k_DXN:
-      out = {dl::TEX_FORMAT_BC5_UNORM, 16};
-      return true;
+    case xenos::TextureFormat::k_DXN: out = {dl::TEX_FORMAT_BC5_UNORM, 16}; return true;
     case xenos::TextureFormat::k_16:
       out = {dl::TEX_FORMAT_R16_UNORM, 2, dl::TEX_FORMAT_R16_TYPELESS, dl::TEX_FORMAT_R16_SNORM};
       return true;
@@ -89,28 +88,20 @@ bool GetHostFormat(xenos::TextureFormat format, HostFormat& out) {
       out = {dl::TEX_FORMAT_RG16_UNORM, 4, dl::TEX_FORMAT_RG16_TYPELESS, dl::TEX_FORMAT_RG16_SNORM};
       return true;
     case xenos::TextureFormat::k_16_16_16_16:
-      out = {dl::TEX_FORMAT_RGBA16_UNORM, 8, dl::TEX_FORMAT_RGBA16_TYPELESS, dl::TEX_FORMAT_RGBA16_SNORM};
+      out = {dl::TEX_FORMAT_RGBA16_UNORM, 8, dl::TEX_FORMAT_RGBA16_TYPELESS,
+             dl::TEX_FORMAT_RGBA16_SNORM};
       return true;
-    case xenos::TextureFormat::k_16_FLOAT:
-      out = {dl::TEX_FORMAT_R16_FLOAT, 2};
-      return true;
-    case xenos::TextureFormat::k_16_16_FLOAT:
-      out = {dl::TEX_FORMAT_RG16_FLOAT, 4};
-      return true;
+    case xenos::TextureFormat::k_16_FLOAT: out = {dl::TEX_FORMAT_R16_FLOAT, 2}; return true;
+    case xenos::TextureFormat::k_16_16_FLOAT: out = {dl::TEX_FORMAT_RG16_FLOAT, 4}; return true;
     case xenos::TextureFormat::k_16_16_16_16_FLOAT:
       out = {dl::TEX_FORMAT_RGBA16_FLOAT, 8};
       return true;
-    case xenos::TextureFormat::k_32_FLOAT:
-      out = {dl::TEX_FORMAT_R32_FLOAT, 4};
-      return true;
-    case xenos::TextureFormat::k_32_32_FLOAT:
-      out = {dl::TEX_FORMAT_RG32_FLOAT, 8};
-      return true;
+    case xenos::TextureFormat::k_32_FLOAT: out = {dl::TEX_FORMAT_R32_FLOAT, 4}; return true;
+    case xenos::TextureFormat::k_32_32_FLOAT: out = {dl::TEX_FORMAT_RG32_FLOAT, 8}; return true;
     case xenos::TextureFormat::k_32_32_32_32_FLOAT:
       out = {dl::TEX_FORMAT_RGBA32_FLOAT, 16};
       return true;
-    default:
-      return false;
+    default: return false;
   }
 }
 
@@ -137,16 +128,13 @@ std::array<uint32_t, 4> HostSwizzle(xenos::TextureFormat format) {
     case xenos::TextureFormat::k_16_FLOAT:
     case xenos::TextureFormat::k_32_FLOAT:
     case xenos::TextureFormat::k_24_8:
-    case xenos::TextureFormat::k_24_8_FLOAT:
-      return {0, 0, 0, 0};
+    case xenos::TextureFormat::k_24_8_FLOAT: return {0, 0, 0, 0};
     case xenos::TextureFormat::k_8_8:
     case xenos::TextureFormat::k_16_16:
     case xenos::TextureFormat::k_16_16_FLOAT:
     case xenos::TextureFormat::k_32_32_FLOAT:
-    case xenos::TextureFormat::k_DXN:
-      return {0, 1, 1, 1};
-    default:
-      return {0, 1, 2, 3};
+    case xenos::TextureFormat::k_DXN: return {0, 1, 1, 1};
+    default: return {0, 1, 2, 3};
   }
 }
 
@@ -245,9 +233,9 @@ struct TextureCache::Impl {
     uint32_t width = width_m1 + 1, height = height_m1 + 1, array_size = depth_m1 + 1;
     uint32_t max_level = mip_page ? mip_max : 0;
     auto dimension = xenos::DataDimension(fetch.dimension);
-    auto layout = rg::texture_util::GetGuestTextureLayout(
-        dimension, fetch.pitch, width, height, array_size, fetch.tiled, format, fetch.packed_mips,
-        true, max_level);
+    auto layout = rg::texture_util::GetGuestTextureLayout(dimension, fetch.pitch, width, height,
+                                                          array_size, fetch.tiled, format,
+                                                          fetch.packed_mips, true, max_level);
     uint32_t base_address = base_page << 12, mip_address = mip_page << 12;
 
     // Content hash: sampled over the base and mip data.
@@ -298,19 +286,19 @@ struct TextureCache::Impl {
         uint8_t* dst = out.data.data() + offsets[index];
         for (uint32_t y = 0; y < blocks_y; ++y) {
           for (uint32_t x = 0; x < blocks_x; ++x) {
-            uint32_t in = fetch.tiled ? uint32_t(rg::texture_util::GetTiledOffset2D(
-                                            int32_t(x + ox), int32_t(y + oy), pitch_bytes / bpb,
-                                            bpb_log2))
-                                      : (y + oy) * pitch_bytes + (x + ox) * bpb;
+            uint32_t in = fetch.tiled
+                              ? uint32_t(rg::texture_util::GetTiledOffset2D(
+                                    int32_t(x + ox), int32_t(y + oy), pitch_bytes / bpb, bpb_log2))
+                              : (y + oy) * pitch_bytes + (x + ox) * bpb;
             uint32_t source = address + in;
-            if (source >= guest::kPhysicalMemorySize || guest::kPhysicalMemorySize - source < bpb) continue;
+            if (source >= guest::kPhysicalMemorySize || guest::kPhysicalMemorySize - source < bpb)
+              continue;
             rg::texture_conversion::CopySwapBlock(xenos::Endian(fetch.endianness),
                                                   dst + (size_t(y) * blocks_x + x) * bpb,
                                                   guest::PhysicalPtr(base, source), bpb);
           }
         }
-        out.subresources.push_back(
-            dl::TextureSubResData{dst, uint64_t(blocks_x) * bpb});
+        out.subresources.push_back(dl::TextureSubResData{dst, uint64_t(blocks_x) * bpb});
       }
     }
     return true;
@@ -399,14 +387,14 @@ dl::ITextureView* TextureCache::GetView2D(const uint32_t fetch_dwords[6], const 
   if (!GetHostFormat(info.format, host) ||
       info.format_info()->bytes_per_block() != host.bytes_per_block) {
     if (m.reported_formats.insert(uint32_t(info.format)).second) {
-      REXLOG_INFO("NATIVE-TEX unsupported guest format {} ({}x{})", uint32_t(info.format),
-                  width, height);
+      REXLOG_INFO("NATIVE-TEX unsupported guest format {} ({}x{})", uint32_t(info.format), width,
+                  height);
     }
     ++m.unsupported;
     return nullptr;
   }
   uint32_t size = info.extent.all_blocks() * host.bytes_per_block;
-  if (!size || address >= guest::kPhysicalMemorySize || size > guest::kPhysicalMemorySize - address) return nullptr;
+  if (!guest::IsPhysicalRange(address, size)) return nullptr;
 
   // The texture is identified by its address, format, size and mip setup.
   // (dword 0: pitch and tiling; 1: base and format; 2: size; 5: mip address).
@@ -479,11 +467,10 @@ dl::ITextureView* TextureCache::GetViewCube(const uint32_t fetch_dwords[6], cons
       (extent.block_pitch_h * extent.block_pitch_v * host.bytes_per_block + 4095) & ~4095u;
   uint32_t address = info.memory.base_address;
   uint32_t size = face_stride * 6;
-  if (!face_stride || address >= guest::kPhysicalMemorySize || size > guest::kPhysicalMemorySize - address) {
-    return nullptr;
-  }
+  if (!guest::IsPhysicalRange(address, size)) return nullptr;
   uint32_t swizzle = ComposeSwizzle(fetch.swizzle, info.format);
 
+  // Cube and 3D keys: the whole fetch constant, xored apart from each other.
   uint64_t key = XXH3_64bits(fetch_dwords, 6 * sizeof(uint32_t)) ^ 0xC0BEC0BEull;
   GuestTextureEntry& entry = m.textures[key];
   src_kind = 'U';
@@ -547,7 +534,7 @@ dl::ITextureView* TextureCache::GetView3D(const uint32_t fetch_dwords[6], const 
   uint32_t pitch = extent.block_pitch_h, pitch_v = extent.block_pitch_v;
   uint32_t address = info.memory.base_address;
   uint32_t size = pitch * pitch_v * depth * host.bytes_per_block;
-  if (!size || address >= guest::kPhysicalMemorySize || size > guest::kPhysicalMemorySize - address) return nullptr;
+  if (!guest::IsPhysicalRange(address, size)) return nullptr;
   const uint8_t* src = guest::PhysicalPtr(base, address);
   uint32_t swizzle = ComposeSwizzle(fetch.swizzle, info.format);
 
@@ -576,9 +563,8 @@ dl::ITextureView* TextureCache::GetView3D(const uint32_t fetch_dwords[6], const 
     for (uint32_t y = 0; y < height; ++y) {
       for (uint32_t x = 0; x < width; ++x) {
         size_t in = info.is_tiled
-                        ? size_t(rg::texture_util::GetTiledOffset3D(int32_t(x), int32_t(y),
-                                                                    int32_t(z), pitch, pitch_v,
-                                                                    bpb_log2))
+                        ? size_t(rg::texture_util::GetTiledOffset3D(
+                              int32_t(x), int32_t(y), int32_t(z), pitch, pitch_v, bpb_log2))
                         : ((size_t(z) * pitch_v + y) * pitch + x) * bpb;
         if (in + bpb > size) continue;
         rg::texture_conversion::CopySwapBlock(
@@ -634,7 +620,8 @@ dl::ISampler* TextureCache::GetSampler(const uint32_t fetch_dwords[6], uint32_t 
   }
   xenos::ClampMode clamp_x, clamp_y, clamp_z;
   rg::texture_util::GetClampModesForDimension(fetch, clamp_x, clamp_y, clamp_z);
-  uint32_t mip_min = fetch.mip_min_level, mip_max = std::max(fetch.mip_min_level, fetch.mip_max_level);
+  uint32_t mip_min = fetch.mip_min_level,
+           mip_max = std::max(fetch.mip_min_level, fetch.mip_max_level);
   bool base_map = mip_filter == uint32_t(xenos::TextureFilter::kBaseMap);
   // The anisotropic_override graphics option, applied as the SDK texture cache does.
   int32_t aniso_override = rex::cvar::Query<int32_t>("anisotropic_override");
@@ -682,11 +669,11 @@ dl::ISampler* TextureCache::GetSampler(const uint32_t fetch_dwords[6], uint32_t 
 }
 
 void TextureCache::LogStats() {
-  REXLOG_INFO("NATIVE-TEX textures={} uploads={} uploaded={} KB resolved_hits={} unsupported={} "
-              "views={} samplers={}",
-              impl_->textures.size(), impl_->uploads, impl_->uploaded_bytes / 1024,
-              impl_->resolved_hits, impl_->unsupported, impl_->views.size(),
-              impl_->samplers.size());
+  REXLOG_INFO(
+      "NATIVE-TEX textures={} uploads={} uploaded={} KB resolved_hits={} unsupported={} "
+      "views={} samplers={}",
+      impl_->textures.size(), impl_->uploads, impl_->uploaded_bytes / 1024, impl_->resolved_hits,
+      impl_->unsupported, impl_->views.size(), impl_->samplers.size());
 }
 
 }  // namespace renderer

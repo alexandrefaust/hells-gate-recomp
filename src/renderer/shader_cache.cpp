@@ -7,23 +7,21 @@
 #include "Graphics/GraphicsEngine/interface/RenderDevice.h"
 #include "Graphics/GraphicsEngine/interface/Shader.h"
 
+#include <rex/cvar.h>
 #include <rex/graphics/pipeline/shader/spirv.h>
 #include <rex/graphics/pipeline/shader/spirv_translator.h>
 #include <rex/graphics/register_file.h>
 #include <rex/graphics/registers.h>
 #include <rex/graphics/util/draw.h>
-#include <rex/cvar.h>
 #include <rex/logging/macros.h>
 #include <rex/string/buffer.h>
 
-#include <xxhash.h>
-
 #include <fmt/format.h>
+#include <xxhash.h>
 
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
-
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -73,7 +71,7 @@ std::string StageResourceName(const std::string& name, bool is_vertex) {
 // Prepares translator SPIR-V for DiligentCore: inserts "OpSource GLSL 450"
 // after the module preamble (its reflection requires one) and applies
 // StageResourceName to OpName strings.
-std::vector<uint32_t> ForDiligent(const std::vector<uint8_t>& binary, bool is_vertex) {
+std::vector<uint32_t> PrepareSpirvForDiligent(const std::vector<uint8_t>& binary, bool is_vertex) {
   std::vector<uint32_t> in(binary.size() / 4);
   std::memcpy(in.data(), binary.data(), in.size() * 4);
   constexpr uint32_t kOpSource = 3, kOpName = 5;
@@ -87,8 +85,10 @@ std::vector<uint32_t> ForDiligent(const std::vector<uint8_t>& binary, bool is_ve
       out.insert(out.end(), in.begin() + pos, in.end());
       break;
     }
-    bool preamble = opcode == 17 || opcode == 10 || opcode == 11 || opcode == 14 ||
-                    opcode == 15 || opcode == 16 || opcode == 331;
+    // OpCapability, OpExtension, OpExtInstImport, OpMemoryModel, OpEntryPoint,
+    // OpExecutionMode, OpExecutionModeId.
+    bool preamble = opcode == 17 || opcode == 10 || opcode == 11 || opcode == 14 || opcode == 15 ||
+                    opcode == 16 || opcode == 331;
     if (opcode == kOpSource) source_done = true;
     if (!preamble && !source_done) {
       out.insert(out.end(), {(3u << 16) | kOpSource, 2 /* GLSL */, 450});
@@ -113,6 +113,11 @@ std::vector<uint32_t> ForDiligent(const std::vector<uint8_t>& binary, bool is_ve
     pos += count;
   }
   return out;
+}
+
+// Pipeline key part of a shader: its ucode hash with the modification mixed in.
+uint64_t ShaderKey(uint64_t ucode_hash, uint64_t modification) {
+  return ucode_hash ^ (modification * 0x9E3779B97F4A7C15ull);
 }
 
 struct GuestShader {
@@ -169,7 +174,8 @@ struct ShaderCache::Impl {
       ci.Desc.ShaderType = is_vertex ? dl::SHADER_TYPE_VERTEX : dl::SHADER_TYPE_PIXEL;
       ci.Desc.Name = is_vertex ? "XenosVS" : "XenosPS";
       ci.EntryPoint = "main";
-      std::vector<uint32_t> spirv = ForDiligent(translation->translated_binary(), is_vertex);
+      std::vector<uint32_t> spirv =
+          PrepareSpirvForDiligent(translation->translated_binary(), is_vertex);
       ci.ByteCode = spirv.data();
       ci.ByteCodeSize = spirv.size() * sizeof(uint32_t);
       device->CreateShader(ci, &result);
@@ -215,7 +221,7 @@ bool ShaderCache::Prepare(const rg::RegisterFile& regs, const GuestShaderCode& v
   uint32_t interpolator_mask =
       ps ? (vs.shader->writes_interpolators() &
             ps->shader->GetInterpolatorInputMask(program_cntl, regs.Get<SQ_CONTEXT_MISC>(),
-                                                ps_param_gen_pos))
+                                                 ps_param_gen_pos))
          : 0;
 
   auto host_vs_type = prim_type == rg::xenos::PrimitiveType::kPointList
@@ -239,17 +245,17 @@ bool ShaderCache::Prepare(const rg::RegisterFile& regs, const GuestShaderCode& v
 
   out.vertex = impl_->Compile(vs, vs_mod.value, vs_hash);
   out.vertex_info = vs.shader.get();
-  out.vertex_key = vs_hash ^ (vs_mod.value * 0x9E3779B97F4A7C15ull);
+  out.vertex_key = ShaderKey(vs_hash, vs_mod.value);
 
   if (ps) {
     Modification ps_mod(impl_->translator.GetDefaultPixelShaderModification(
         ps->shader->GetDynamicAddressableRegisterCount(program_cntl.ps_num_reg)));
     ps_mod.pixel.interpolator_mask = interpolator_mask;
     ps_mod.pixel.interpolators_centroid =
-        interpolator_mask &
-        ~rg::xenos::GetInterpolatorSamplingPattern(regs.Get<RB_SURFACE_INFO>().msaa_samples,
-                                                   regs.Get<SQ_CONTEXT_MISC>().sc_sample_cntl,
-                                                   regs.Get<SQ_INTERPOLATOR_CNTL>().sampling_pattern);
+        interpolator_mask & ~rg::xenos::GetInterpolatorSamplingPattern(
+                                regs.Get<RB_SURFACE_INFO>().msaa_samples,
+                                regs.Get<SQ_CONTEXT_MISC>().sc_sample_cntl,
+                                regs.Get<SQ_INTERPOLATOR_CNTL>().sampling_pattern);
     if (ps_param_gen_pos < rg::xenos::kMaxInterpolators) {
       ps_mod.pixel.param_gen_enable = 1;
       ps_mod.pixel.param_gen_interpolator = ps_param_gen_pos;
@@ -268,7 +274,7 @@ bool ShaderCache::Prepare(const rg::RegisterFile& regs, const GuestShaderCode& v
             : DepthStencilMode::kNoModifiers;
     out.pixel = impl_->Compile(*ps, ps_mod.value, ps_hash);
     out.pixel_info = ps->shader.get();
-    out.pixel_key = ps_hash ^ (ps_mod.value * 0x9E3779B97F4A7C15ull);
+    out.pixel_key = ShaderKey(ps_hash, ps_mod.value);
     if (!out.pixel) return false;
   }
   return out.vertex != nullptr;

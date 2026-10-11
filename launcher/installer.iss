@@ -1,6 +1,4 @@
-; Dante's Inferno - Inno Setup installer script
-; Produces a standard Windows installer that is less likely to be flagged
-; by SmartScreen/Windows Defender than the custom WPF payload installer.
+; Dante's Inferno installer (Inno Setup 6). Built by package-release.ps1.
 
 #define MyAppName "Dante's Inferno"
 #define MyAppPublisher "florinp93"
@@ -65,15 +63,11 @@ Source: "DantesInfernoLauncher\bin\Release\version.txt"; DestDir: "{app}"; Flags
 Source: "icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "banner.jpg"; DestDir: "{app}"; Flags: ignoreversion
 
-; ISO extraction tool (bundled, used post-install)
+; Extracts the user's ISO into game\ after install; no game data is shipped.
 Source: "..\tools\extract-xiso\extract-xiso.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 
-; NOTE: Game data (game/) is NOT included — the user provides their own ISO
-; and the post-install step extracts it.
-
-; Title Update 2 (TU2) patch — enables playable DLC like Trials of Saint Lucia.
-; The runtime automatically applies this patch when default.xexp is present
-; alongside default.xex in the game folder.
+; Title Update 2, needed for playable DLC such as Trials of Saint Lucia; the
+; game applies default.xexp found next to default.xex.
 #define TuPath SourcePath + "\..\out\build\win-amd64-release\default.xexp"
 #if FileExists(TuPath)
 Source: "{#TuPath}"; DestDir: "{app}\game"; Flags: ignoreversion
@@ -85,10 +79,8 @@ Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{commondesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\icon.ico"; Tasks: desktopicon
 
 [Run]
-; Extract game data from ISO during install (visible console so user sees progress)
 Filename: "{tmp}\extract-xiso.exe"; Parameters: "-x -d ""{app}\game"" -s ""{code:GetIsoPath}"""; WorkingDir: "{app}"; StatusMsg: "Extracting game data from ISO (this may take a few minutes)..."; Flags: hidewizard; Check: NeedsExtraction
 
-; Launch the launcher after install
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch Dante's Inferno Launcher"; Flags: postinstall nowait skipifsilent
 
 [InstallDelete]
@@ -108,7 +100,7 @@ var
   IsoPage: TInputFileWizardPage;
   IsoSizeMB: Int64;
 
-{ Windows API to get file size (supports >4GB files) }
+{ File sizes above 4 GB (ISOs) }
 function GetFileSizeEx(hFile: THandle; var lpFileSize: Int64): Boolean;
   external 'GetFileSizeEx@kernel32.dll stdcall';
 function CreateFileW(lpFileName: WideString; dwDesiredAccess: Cardinal; dwShareMode: Cardinal; lpSecurityAttributes: Cardinal; dwCreationDisposition: Cardinal; dwFlagsAndAttributes: Cardinal; hTemplateFile: Cardinal): THandle;
@@ -208,15 +200,13 @@ var
   BaseMB: Int64;
   TotalMB: Int64;
 begin
-  { When arriving at the "Ready to Install" page, update the disk space label }
   if CurPageID = wpReady then
   begin
-    { Base install size from [Files] (approx 55 MB for port binaries + launcher) }
+    { Port binaries and launcher }
     BaseMB := 55;
     if IsoSizeMB > 0 then
     begin
-      { ISO extraction roughly doubles the ISO size on disk (game data is
-        uncompressed from the ISO container). Use 1.5x as a conservative estimate. }
+      { Extracted game data plus headroom }
       TotalMB := BaseMB + Round(IsoSizeMB * 1.5);
       WizardForm.DiskSpaceLabel.Caption :=
         'Required space (port + game data from ISO): ' + FormatMB(TotalMB) +
@@ -253,7 +243,7 @@ var
 begin
   if CurStep = ssPostInstall then
   begin
-    { Write dantes_inferno.toml with sensible defaults }
+    { First install: default settings }
     ConfigPath := ExpandConstant('{app}\dantes_inferno.toml');
     if not FileExists(ConfigPath) then
     begin
@@ -266,7 +256,7 @@ begin
         False);
     end;
 
-    { Always write version.txt so updates reflect the new version }
+    { The launcher's update check reads version.txt }
     VersionFile := ExpandConstant('{app}\version.txt');
     SaveStringToFile(VersionFile, '{#MyAppVersion}' + #13#10, False);
   end;

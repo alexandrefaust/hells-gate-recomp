@@ -1,42 +1,42 @@
 #include "renderer.h"
 
-#include "draw_renderer.h"
-#include "png_dump.h"
 #include "button_glyphs.h"
+#include "draw_renderer.h"
+#include "guest_gpu_state.h"
+#include "png_dump.h"
+#include "render_stats.h"
 #include "shader_cache.h"
 #include "smaa_pass.h"
 #include "swizzle.h"
-#include "render_stats.h"
 #include "texture_cache.h"
-#include "guest_gpu_state.h"
 #include "vulkan_device.h"
 
 #include "Common/interface/RefCntAutoPtr.hpp"
-#include "Graphics/GraphicsEngine/interface/DeviceContext.h"
 #include "Graphics/GraphicsEngine/interface/Buffer.h"
+#include "Graphics/GraphicsEngine/interface/DeviceContext.h"
 #include "Graphics/GraphicsEngine/interface/Fence.h"
 #include "Graphics/GraphicsEngine/interface/PipelineState.h"
+#include "Graphics/GraphicsEngine/interface/RenderDevice.h"
 #include "Graphics/GraphicsEngine/interface/Sampler.h"
 #include "Graphics/GraphicsEngine/interface/ShaderResourceBinding.h"
-#include "Graphics/GraphicsTools/interface/MapHelper.hpp"
-#include "Graphics/GraphicsEngine/interface/RenderDevice.h"
 #include "Graphics/GraphicsEngine/interface/Texture.h"
 #include "Graphics/GraphicsEngine/interface/TextureView.h"
+#include "Graphics/GraphicsTools/interface/MapHelper.hpp"
 
 #include <rex/cvar.h>
-#include <xxhash.h>
 #include <rex/graphics/pipeline/texture/util.h>
 #include <rex/graphics/register_file.h>
 #include <rex/graphics/registers.h>
 #include <rex/logging/macros.h>
 #include <rex/ui/window.h>
 
+#include <fmt/format.h>
+#include <xxhash.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
-
-#include <fmt/format.h>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -136,7 +136,7 @@ struct RenderTarget {
   dl::TEXTURE_FORMAT format = dl::TEX_FORMAT_UNKNOWN;
   dl::RefCntAutoPtr<dl::ITexture> texture;
   Scale scale;
-  bool guest_float_depth = false;  // guest D24FS8
+  bool guest_float_depth = false;                    // guest D24FS8
   dl::RefCntAutoPtr<dl::ITextureView> stencil_view;  // depth: stencil SRV, on demand
 };
 
@@ -173,8 +173,8 @@ struct ResolveTarget {
   uint64_t readback_fence = 0;
   uint32_t readback_fetch[6] = {};
   bool written_back = false;
-  // Destination is slice `slice` of a 3D texture `depth` deep (depth 0: 2D).
-  uint32_t depth = 0, slice = 0;
+  // Destination is slice `slice` of a 3D texture `volume_depth` deep (0: 2D).
+  uint32_t volume_depth = 0, slice = 0;
   Scale scale;
   // Depth resolves (k_24_8) the game also samples as k_8_8_8_8: the guest
   // memory holds the raw D24S8 words, so those reads get this RGBA8 copy
@@ -187,7 +187,9 @@ struct ResolveTarget {
 // resets the copy registers to 0 after the copy).
 uint32_t FindRegisterWrite(const uint8_t* base, uint32_t start, uint32_t end, uint32_t reg) {
   uint32_t value = ~0u;
-  if (!IsPlausibleAddress(start) || !IsPlausibleAddress(end) || end <= start || end - start > 0x40000) return value;
+  if (!IsPlausibleAddress(start) || !IsPlausibleAddress(end) || end <= start ||
+      end - start > 0x40000)
+    return value;
   for (uint32_t p = start + 4; p <= end;) {
     uint32_t header = Load32(base, p);
     uint32_t type = header >> 30;
@@ -275,7 +277,8 @@ RenderScale ComputeRenderScale(rex::ui::Window* window) {
   }
   return scale;
 }
-std::unique_ptr<renderer::VulkanDevice> g_device;
+
+std::unique_ptr<VulkanDevice> g_device;
 uint64_t g_frame = 0;
 bool g_log_this_frame = false;
 // First frame of an F8 capture: every resolve output and the front buffer are
@@ -318,32 +321,34 @@ struct InlineDraw {
 };
 InlineDraw g_pending_inline_draw;
 
+// VGT_DRAW_INITIATOR of an inline draw: auto-indexed (source select 2).
+uint32_t InlineDrawInitiator(const InlineDraw& draw) {
+  return (draw.count << 16) | (2u << 6) | (draw.prim & 0x3F);
+}
+
 bool Is64bpp(uint32_t color_format) {
   return color_format == 5 || color_format == 7 || color_format == 15;
 }
 
 dl::TEXTURE_FORMAT ColorFormat(uint32_t format) {
   switch (format) {
-    case 0:   // 8_8_8_8
-    case 1:   // 8_8_8_8_GAMMA
+    case 0:  // 8_8_8_8
+    case 1:  // 8_8_8_8_GAMMA
       return dl::TEX_FORMAT_RGBA8_UNORM;
     case 2:   // 2_10_10_10
     case 10:  // 2_10_10_10_AS_10_10_10_10
       return dl::TEX_FORMAT_RGB10A2_UNORM;
-    case 4:   // 16_16 (fixed -32..32)
-    case 6:   // 16_16_FLOAT
+    case 4:  // 16_16 (fixed -32..32)
+    case 6:  // 16_16_FLOAT
       return dl::TEX_FORMAT_RG16_FLOAT;
     case 3:   // 2_10_10_10_FLOAT
     case 5:   // 16_16_16_16 (fixed -32..32)
     case 7:   // 16_16_16_16_FLOAT
     case 12:  // 2_10_10_10_FLOAT_AS_16_16_16_16
       return dl::TEX_FORMAT_RGBA16_FLOAT;
-    case 14:
-      return dl::TEX_FORMAT_R32_FLOAT;
-    case 15:
-      return dl::TEX_FORMAT_RG32_FLOAT;
-    default:
-      return dl::TEX_FORMAT_RGBA8_UNORM;
+    case 14: return dl::TEX_FORMAT_R32_FLOAT;
+    case 15: return dl::TEX_FORMAT_RG32_FLOAT;
+    default: return dl::TEX_FORMAT_RGBA8_UNORM;
   }
 }
 
@@ -359,11 +364,11 @@ dl::TEXTURE_FORMAT DepthFormat(uint32_t format) {
 // Guest texture format (fetch constant dword1 & 0x3F) as a resolve destination.
 dl::TEXTURE_FORMAT ResolveTargetFormat(uint32_t format) {
   switch (format) {
-    case 2:   // k_8
+    case 2:  // k_8
       return dl::TEX_FORMAT_R8_UNORM;
-    case 6:   // k_8_8_8_8
+    case 6:  // k_8_8_8_8
       return dl::TEX_FORMAT_RGBA8_UNORM;
-    case 7:   // k_2_10_10_10
+    case 7:  // k_2_10_10_10
       return dl::TEX_FORMAT_RGB10A2_UNORM;
     case 25:  // k_16_16
     case 31:  // k_16_16_FLOAT
@@ -377,8 +382,7 @@ dl::TEXTURE_FORMAT ResolveTargetFormat(uint32_t format) {
       return dl::TEX_FORMAT_R32_FLOAT;
     case 37:  // k_32_32_FLOAT
       return dl::TEX_FORMAT_RG32_FLOAT;
-    default:
-      return dl::TEX_FORMAT_RGBA8_UNORM;
+    default: return dl::TEX_FORMAT_RGBA8_UNORM;
   }
 }
 
@@ -433,8 +437,8 @@ RenderTarget* GetRenderTarget(const SurfaceDesc& s) {
   desc.Height = scale.HostY(height);
   desc.MipLevels = 1;
   desc.Format = s.depth ? DepthFormat(s.format) : ColorFormat(s.format);
-  desc.BindFlags = (s.depth ? dl::BIND_DEPTH_STENCIL : dl::BIND_RENDER_TARGET) |
-                   dl::BIND_SHADER_RESOURCE;
+  desc.BindFlags =
+      (s.depth ? dl::BIND_DEPTH_STENCIL : dl::BIND_RENDER_TARGET) | dl::BIND_SHADER_RESOURCE;
   desc.Usage = dl::USAGE_DEFAULT;
   rt.texture.Release();
   g_device->RenderDevice()->CreateTexture(desc, nullptr, &rt.texture);
@@ -459,7 +463,7 @@ RenderTarget* GetRenderTarget(const SurfaceDesc& s) {
 
 // `scale` is the scale of the render target being resolved.
 ResolveTarget* GetResolveTarget(uint32_t address, uint32_t width, uint32_t height,
-                              uint32_t guest_format, uint32_t slice, Scale scale) {
+                                uint32_t guest_format, uint32_t slice, Scale scale) {
   ResolveTargetKey key{address, width, height, guest_format, slice};
   ResolveTarget& t = g_resolve_targets[key];
   if (t.texture && t.scale == scale) return &t;
@@ -476,8 +480,8 @@ ResolveTarget* GetResolveTarget(uint32_t address, uint32_t width, uint32_t heigh
   t.depth_bits.Release();
   g_device->RenderDevice()->CreateTexture(desc, nullptr, &t.texture);
   if (!t.texture) {
-    REXLOG_ERROR("DanteDevice: failed to create resolve target {:08X} {}x{} fmt={}", address,
-                 width, height, guest_format);
+    REXLOG_ERROR("DanteDevice: failed to create resolve target {:08X} {}x{} fmt={}", address, width,
+                 height, guest_format);
     g_resolve_targets.erase(key);
     return nullptr;
   }
@@ -618,8 +622,7 @@ void CopyDepthBits(RenderTarget& depth, dl::ITexture* dest, uint32_t x1, uint32_
 
 void ClearColor(RenderTarget& rt, const float color[4]) {
   auto* rtv = rt.texture->GetDefaultView(dl::TEXTURE_VIEW_RENDER_TARGET);
-  g_device->Context()->ClearRenderTarget(rtv, color,
-                                                  dl::RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+  g_device->Context()->ClearRenderTarget(rtv, color, dl::RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
 }
 
 void ClearDepth(RenderTarget& rt, bool depth, bool stencil, float z, uint8_t stencil_value) {
@@ -628,7 +631,7 @@ void ClearDepth(RenderTarget& rt, bool depth, bool stencil, float z, uint8_t ste
   if (stencil) flags |= dl::CLEAR_STENCIL_FLAG;
   auto* dsv = rt.texture->GetDefaultView(dl::TEXTURE_VIEW_DEPTH_STENCIL);
   g_device->Context()->ClearDepthStencil(dsv, flags, z, stencil_value,
-                                                  dl::RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+                                         dl::RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
 }
 
 // Draw counts are logged when the next clear/resolve/swap or RT change ends a run.
@@ -665,7 +668,7 @@ void QueueReadback(ResolveTarget& t, const uint8_t* base, uint32_t dest) {
   using rex::graphics::xenos::TextureFormat;
   if ((t.guest_format != uint32_t(TextureFormat::k_32_FLOAT) &&
        t.guest_format != uint32_t(TextureFormat::k_8_8_8_8)) ||
-      (!t.depth && t.width * t.height > kReadbackMaxTexels) || t.readback_fence) {
+      (!t.volume_depth && t.width * t.height > kReadbackMaxTexels) || t.readback_fence) {
     return;
   }
   auto* device = g_device->RenderDevice();
@@ -721,7 +724,7 @@ void FinishReadbacks(const uint8_t* base) {
               mapped.Stride);
       for (uint32_t x = 0; x < t.width; ++x) {
         uint32_t offset;
-        if (t.depth) {
+        if (t.volume_depth) {
           offset = fetch.tiled ? uint32_t(rex::graphics::texture_util::GetTiledOffset3D(
                                      int32_t(x), int32_t(y), int32_t(t.slice), pitch, t.height, 2))
                                : ((t.slice * ((t.height + 31) & ~31u) + y) * pitch + x) * 4;
@@ -730,8 +733,10 @@ void FinishReadbacks(const uint8_t* base) {
                                      int32_t(x), int32_t(y), pitch, 2))
                                : (y * pitch + x) * 4;
         }
-        uint32_t texel = row[std::min(uint32_t((x + 0.5f) * t.scale.x), t.scale.HostX(t.width) - 1)];
-        if (t.rb_swap) texel = (texel & 0xFF00FF00u) | ((texel >> 16) & 0xFF) | ((texel & 0xFF) << 16);
+        uint32_t texel =
+            row[std::min(uint32_t((x + 0.5f) * t.scale.x), t.scale.HostX(t.width) - 1)];
+        if (t.rb_swap)
+          texel = (texel & 0xFF00FF00u) | ((texel >> 16) & 0xFF) | ((texel & 0xFF) << 16);
         uint32_t value = rex::graphics::xenos::GpuSwap(texel, fetch.endianness);
         std::memcpy(memory + key.address + offset, &value, 4);
       }
@@ -739,15 +744,18 @@ void FinishReadbacks(const uint8_t* base) {
     context->UnmapTextureSubresource(t.staging, 0, 0);
     if (!t.written_back) {
       t.written_back = true;
-      REXLOG_INFO("NATIVE-RT resolve {:08X} {}x{} written back to guest memory (tiled={} endian={})",
-                  key.address, t.width, t.height, bool(fetch.tiled), uint32_t(fetch.endianness));
+      REXLOG_INFO(
+          "NATIVE-RT resolve {:08X} {}x{} written back to guest memory (tiled={} endian={})",
+          key.address, t.width, t.height, bool(fetch.tiled), uint32_t(fetch.endianness));
     }
   }
 }
 
 // Parses the PM4 packets written in (start, end] (end = last dword written).
 void ScanProgramFlush(const uint8_t* base, uint32_t start, uint32_t end) {
-  if (!IsPlausibleAddress(start) || !IsPlausibleAddress(end) || end <= start || end - start > 0x40000) return;
+  if (!IsPlausibleAddress(start) || !IsPlausibleAddress(end) || end <= start ||
+      end - start > 0x40000)
+    return;
   uint32_t p = start + 4;
   LoadedShader found;
   while (p <= end) {
@@ -842,7 +850,7 @@ GuestShaderCode VertexShaderCode(const uint8_t* base, uint32_t dev) {
 // GPU still runs the previous one (the SDK backends use the active shader).
 GuestShaderCode PixelShaderCode(const uint8_t* base, uint32_t dev) {
   if (g_register_file && g_register_file->Get<rex::graphics::reg::RB_MODECONTROL>().edram_mode !=
-                    rex::graphics::xenos::EdramMode::kColorDepth) {
+                             rex::graphics::xenos::EdramMode::kColorDepth) {
     return {};
   }
   uint32_t ps = Load32(base, dev + kDevPixelShader);
@@ -855,10 +863,10 @@ GuestShaderCode PixelShaderCode(const uint8_t* base, uint32_t dev) {
   return g_last_ps;
 }
 
-// The draw packet ends the command-buffer range the D3D call wrote (dev+48 =
-// last dword, checked with the state verifier). PM4 type-3 DRAW_INDX (0x22): [hdr][viz]
-// [initiator][dma base][dma size] for indexed, [hdr][viz][initiator] otherwise;
-// DRAW_INDX_2 (0x36): [hdr][initiator].
+// The draw packet ends what the D3D call wrote to the command buffer (dev+48
+// is its last dword). PM4 type-3 DRAW_INDX (0x22): [hdr][viz][initiator][dma
+// base][dma size] when indexed, [hdr][viz][initiator] otherwise; DRAW_INDX_2
+// (0x36): [hdr][initiator].
 bool ParseDrawPacket(const uint8_t* base, uint32_t dev, uint32_t& initiator, uint32_t& dma_base,
                      uint32_t& dma_size) {
   uint32_t last = Load32(base, dev + kDevCommandBufferWritePtr);
@@ -929,7 +937,7 @@ DrawTargets BoundTargets(const uint8_t* base, uint32_t dev) {
   return t;
 }
 
-// Effective state + shaders + draw for the draw just submitted.
+// Draws natively what the D3D call just submitted.
 void SubmitDraw(uint32_t dev, uint32_t initiator, uint32_t dma_base, uint32_t dma_size,
                 const InlineDraw* inline_draw, const uint8_t* base) {
   ++g_swap_draws;
@@ -937,7 +945,8 @@ void SubmitDraw(uint32_t dev, uint32_t initiator, uint32_t dma_base, uint32_t dm
   CaptureDrawState(dev, base, state);
   uint32_t index = 0;
   for (const auto& range : kShadowRanges) {
-    for (uint32_t i = 0; i < range.count; ++i) g_register_file->values[range.reg + i] = state[index++];
+    for (uint32_t i = 0; i < range.count; ++i)
+      g_register_file->values[range.reg + i] = state[index++];
   }
   g_register_file->values[rex::graphics::XE_GPU_REG_VGT_DRAW_INITIATOR] = initiator;
   g_register_file->values[rex::graphics::XE_GPU_REG_VGT_DMA_BASE] = dma_base;
@@ -968,8 +977,6 @@ void SubmitDraw(uint32_t dev, uint32_t initiator, uint32_t dma_base, uint32_t dm
                         inline_draw ? 95u : ~0u);
 }
 
-std::unordered_map<uint64_t, dl::RefCntAutoPtr<dl::ITextureView>> g_front_views;
-
 // Instant replay: the last presented frames, downscaled, kept on the GPU; Home
 // writes them with per-frame notes to frame_dump/replay_<frame>/.
 constexpr uint32_t kReplayWidth = 640, kReplayHeight = 360;
@@ -998,7 +1005,8 @@ bool EnsureReplay(uint32_t capacity) {
   if (r.failed) return false;
   if (!r.pso) {
     r.failed = true;
-    r.pso.Attach(g_device->CreateFullscreenPipeline("Replay", kReplayPS, dl::TEX_FORMAT_RGBA8_UNORM));
+    r.pso.Attach(
+        g_device->CreateFullscreenPipeline("Replay", kReplayPS, dl::TEX_FORMAT_RGBA8_UNORM));
     if (!r.pso) return false;
     r.pso->CreateShaderResourceBinding(&r.srb, true);
     dl::SamplerDesc linear;
@@ -1118,9 +1126,10 @@ void PerfOnSwap(uint32_t draws, uint32_t resolves) {
   uint64_t pipelines = stats.pipelines_created - p.at_last_swap.pipelines_created;
   p.at_last_swap = stats;
   if (ms > kSlowFrameMs && ++p.slow_frames <= kSlowFramesLoggedPerWindow) {
-    REXLOG_INFO("PERF slow frame f{}: {:.1f} ms, {} shaders and {} pipelines compiled, {} draws, "
-                "{} resolves",
-                g_frame, ms, shaders, pipelines, draws, resolves);
+    REXLOG_INFO(
+        "PERF slow frame f{}: {:.1f} ms, {} shaders and {} pipelines compiled, {} draws, "
+        "{} resolves",
+        g_frame, ms, shaders, pipelines, draws, resolves);
   }
   double seconds = std::chrono::duration<double>(now - p.start).count();
   if (seconds < kPerfWindowSeconds) return;
@@ -1131,17 +1140,21 @@ void PerfOnSwap(uint32_t draws, uint32_t resolves) {
   double slowest_ms = 0.0;
   for (size_t i = 0; i < slowest; ++i) slowest_ms += sorted[i];
   slowest_ms /= double(slowest);
-  REXLOG_INFO("PERF last {:.0f} s: {} frames, avg {:.1f} fps, 1% low {:.1f} fps, worst {:.1f} ms, "
-              "{} frames over {:.0f} ms; compiled {} shaders, {} pipelines (total {}, {})",
-              seconds, sorted.size(), sorted.size() / seconds, 1000.0 / slowest_ms, sorted.front(),
-              p.slow_frames, kSlowFrameMs, stats.shaders_compiled - p.at_start.shaders_compiled,
-              stats.pipelines_created - p.at_start.pipelines_created, stats.shaders_compiled,
-              stats.pipelines_created);
+  REXLOG_INFO(
+      "PERF last {:.0f} s: {} frames, avg {:.1f} fps, 1% low {:.1f} fps, worst {:.1f} ms, "
+      "{} frames over {:.0f} ms; compiled {} shaders, {} pipelines (total {}, {})",
+      seconds, sorted.size(), sorted.size() / seconds, 1000.0 / slowest_ms, sorted.front(),
+      p.slow_frames, kSlowFrameMs, stats.shaders_compiled - p.at_start.shaders_compiled,
+      stats.pipelines_created - p.at_start.pipelines_created, stats.shaders_compiled,
+      stats.pipelines_created);
   p.start = now;
   p.frame_ms.clear();
   p.slow_frames = 0;
   p.at_start = stats;
 }
+
+// Views of front buffer textures with the front buffer's swizzle.
+std::unordered_map<uint64_t, dl::RefCntAutoPtr<dl::ITextureView>> g_front_views;
 
 dl::ITextureView* FrontBufferView(dl::ITexture* texture, uint32_t swizzle) {
   uint64_t key = uint64_t(reinterpret_cast<uintptr_t>(texture)) ^ (uint64_t(swizzle) << 52);
@@ -1176,7 +1189,7 @@ bool Start(rex::ui::Window* window) {
     return false;
   }
   window->SetPresenter(nullptr);
-  auto device = std::make_unique<renderer::VulkanDevice>();
+  auto device = std::make_unique<VulkanDevice>();
   if (!device->Initialize(hwnd, 1280, 720)) {
     REXLOG_ERROR("DanteDevice: native device initialization failed");
     return false;
@@ -1187,8 +1200,7 @@ bool Start(rex::ui::Window* window) {
               adapter.Description, adapter.VendorId, adapter.DeviceId,
               // CPU-visible VRAM (Resizable BAR) is reported as unified memory.
               (adapter.Memory.LocalMemory + adapter.Memory.UnifiedMemory) >> 20,
-              device_info.APIVersion.Major,
-              device_info.APIVersion.Minor);
+              device_info.APIVersion.Major, device_info.APIVersion.Minor);
   RenderScale scale = ComputeRenderScale(window);
   device->SetDisplayAspect(scale.display_aspect, true);
   g_device = std::move(device);
@@ -1199,9 +1211,8 @@ bool Start(rex::ui::Window* window) {
   const auto& d24 =
       g_device->RenderDevice()->GetTextureFormatInfoExt(dl::TEX_FORMAT_D24_UNORM_S8_UINT);
   g_use_d24_depth = (d24.BindFlags & kDepthUse) == kDepthUse && !REXCVAR_GET(dante_depth_float);
-  REXLOG_INFO("DanteDevice: depth buffers {}", g_use_d24_depth
-                                                   ? "D24S8"
-                                                   : "D32S8 (no 24-bit depth on this GPU or forced)");
+  REXLOG_INFO("DanteDevice: depth buffers {}",
+              g_use_d24_depth ? "D24S8" : "D32S8 (no 24-bit depth on this GPU or forced)");
   Scale target_scale{g_scale_x, g_scale_y};
   REXLOG_INFO("DanteDevice: resolution scale {:.3f} x {:.3f} ({}x{}, display aspect {:.4f})",
               g_scale_x, g_scale_y, target_scale.HostX(1280), target_scale.HostY(720),
@@ -1219,15 +1230,15 @@ bool Start(rex::ui::Window* window) {
         // k_8_8_8_8 over a depth resolve (k_24_8): its raw words, from the
         // next resolve on.
         if (format != uint32_t(rex::graphics::xenos::TextureFormat::k_8_8_8_8)) return nullptr;
-        it = g_resolve_targets.find(
-            ResolveTargetKey{address, width, height, uint32_t(rex::graphics::xenos::TextureFormat::k_24_8)});
+        it = g_resolve_targets.find(ResolveTargetKey{
+            address, width, height, uint32_t(rex::graphics::xenos::TextureFormat::k_24_8)});
         if (it == g_resolve_targets.end()) return nullptr;
         it->second.depth_bits_wanted = true;
         rb_swap = false;
         return it->second.depth_bits.RawPtr();
       });
   g_draw_renderer = std::make_unique<DrawRenderer>(g_device->RenderDevice(), g_device->Context(),
-                                           g_texture_cache.get());
+                                                   g_texture_cache.get());
   g_smaa = std::make_unique<SmaaPass>(g_device.get());
   g_button_glyphs = std::make_unique<ButtonGlyphs>(g_device->RenderDevice());
   g_texture_cache->SetReplacer([](uint64_t hash, const TextureCache::LoadedTexture* loaded) {
@@ -1323,7 +1334,8 @@ void AfterResolve(const CallArgs& a, const uint8_t* base) {
   uint32_t source = flags & 7;
   bool from_depth = source == 4;
   SurfaceDesc s;
-  uint32_t surface = Load32(base, dev + (from_depth ? kDevDepthStencil : kDevRenderTargets + source * 4));
+  uint32_t surface =
+      Load32(base, dev + (from_depth ? kDevDepthStencil : kDevRenderTargets + source * 4));
   if (!ReadSurface(base, surface, from_depth, s)) return;
   RenderTarget* rt = GetRenderTarget(s);
   if (!rt) return;
@@ -1352,7 +1364,7 @@ void AfterResolve(const CallArgs& a, const uint8_t* base) {
     uint32_t guest_format = dword1 & 0x3F;
     uint32_t width = (dword2 & 0x1FFF) + 1;
     uint32_t height = ((dword2 >> 13) & 0x1FFF) + 1;
-    uint32_t depth = 0, slice = 0;
+    uint32_t volume_depth = 0, slice = 0;
     rex::graphics::xenos::xe_gpu_texture_fetch_t dest_fetch;
     uint32_t dest_dwords[6];
     for (uint32_t i = 0; i < 6; ++i) dest_dwords[i] = Load32(base, dest + 0x1C + i * 4);
@@ -1360,31 +1372,33 @@ void AfterResolve(const CallArgs& a, const uint8_t* base) {
     if (dest_fetch.dimension == rex::graphics::xenos::DataDimension::k3D) {
       width = dest_fetch.size_3d.width + 1;
       height = dest_fetch.size_3d.height + 1;
-      depth = dest_fetch.size_3d.depth + 1;
-      slice = std::min(a.r[6], depth - 1);
+      volume_depth = dest_fetch.size_3d.depth + 1;
+      slice = std::min(a.r[6], volume_depth - 1);
     }
-    ResolveTarget* t =
-        GetResolveTarget(address, width, height, guest_format, depth ? slice + 1 : 0, rt->scale);
+    ResolveTarget* t = GetResolveTarget(address, width, height, guest_format,
+                                        volume_depth ? slice + 1 : 0, rt->scale);
     if (t) {
-      t->depth = depth;
+      t->volume_depth = volume_depth;
       t->slice = slice;
     }
-    // The Resolve's packets, split at ring kicks (segment switches).
+    // RB_COPY_DEST_INFO from the Resolve's packets, which may span several
+    // command buffer segments.
     uint32_t dest_info = ~0u;
     uint32_t span_start = a.write_ptr_before;
-    uint32_t kicks = g_segment_switch_count - a.segment_switches_before;
-    if (kicks <= kSegmentSwitchHistory) {
-      for (uint32_t k = a.segment_switches_before; k != g_segment_switch_count; ++k) {
-        const SegmentSwitch& kick = g_segment_switches[k % kSegmentSwitchHistory];
-        uint32_t v = FindRegisterWrite(base, span_start, kick.old_ptr, 0x231B);
+    uint32_t switches = g_segment_switch_count - a.segment_switches_before;
+    if (switches <= kSegmentSwitchHistory) {
+      for (uint32_t i = a.segment_switches_before; i != g_segment_switch_count; ++i) {
+        const SegmentSwitch& sw = g_segment_switches[i % kSegmentSwitchHistory];
+        uint32_t v = FindRegisterWrite(base, span_start, sw.old_ptr, 0x231B);
         if (v != ~0u) dest_info = v;
-        span_start = kick.new_ptr;
+        span_start = sw.new_ptr;
       }
-      uint32_t v = FindRegisterWrite(base, span_start, Load32(base, dev + kDevCommandBufferWritePtr), 0x231B);
+      uint32_t v = FindRegisterWrite(base, span_start,
+                                     Load32(base, dev + kDevCommandBufferWritePtr), 0x231B);
       if (v != ~0u) dest_info = v;
     }
-    // Not found when the Resolve's packets cross a ring segment: keep the
-    // target's previous setting (the game resolves each target the same way).
+    // Not found (more switches than the history keeps): keep the target's
+    // previous setting; the game resolves each target the same way.
     bool rb_swap = dest_info != ~0u ? bool((dest_info >> 24) & 1) : t && t->rb_swap;
     if (dest_info == ~0u) ++g_swap_dest_info_missing;
     const char* result = "skipped";
@@ -1392,7 +1406,8 @@ void AfterResolve(const CallArgs& a, const uint8_t* base) {
       x2 = std::min({x2, rt->width, x1 + (t->width - std::min(dst_x, t->width))});
       y2 = std::min({y2, rt->height, y1 + (t->height - std::min(dst_y, t->height))});
       if (x2 > x1 && y2 > y1) {
-        dl::Box box(rt->scale.HostX(x1), rt->scale.HostX(x2), rt->scale.HostY(y1), rt->scale.HostY(y2));
+        dl::Box box(rt->scale.HostX(x1), rt->scale.HostX(x2), rt->scale.HostY(y1),
+                    rt->scale.HostY(y2));
         dl::CopyTextureAttribs copy(rt->texture, dl::RESOURCE_STATE_TRANSITION_MODE_TRANSITION,
                                     t->texture, dl::RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
         copy.pSrcBox = &box;
@@ -1400,7 +1415,7 @@ void AfterResolve(const CallArgs& a, const uint8_t* base) {
         copy.DstY = t->scale.HostY(dst_y);
         // The source is usually still bound as the render target.
         g_device->Context()->SetRenderTargets(0, nullptr, nullptr,
-                                                       dl::RESOURCE_STATE_TRANSITION_MODE_NONE);
+                                              dl::RESOURCE_STATE_TRANSITION_MODE_NONE);
         g_device->Context()->CopyTexture(copy);
         t->rb_swap = rb_swap;
         result = rb_swap ? "copied(rb swap)" : "copied";
@@ -1427,8 +1442,9 @@ void AfterResolve(const CallArgs& a, const uint8_t* base) {
             if (t->depth_bits) ClearNewTexture(t->depth_bits, false);
           }
           if (t->depth_bits) {
-            CopyDepthBits(*rt, t->depth_bits, rt->scale.HostX(x1), rt->scale.HostY(y1), rt->scale.HostX(x2),
-                          rt->scale.HostY(y2), t->scale.HostX(dst_x), t->scale.HostY(dst_y));
+            CopyDepthBits(*rt, t->depth_bits, rt->scale.HostX(x1), rt->scale.HostY(y1),
+                          rt->scale.HostX(x2), rt->scale.HostY(y2), t->scale.HostX(dst_x),
+                          t->scale.HostY(dst_y));
           }
         }
       }
@@ -1441,11 +1457,11 @@ void AfterResolve(const CallArgs& a, const uint8_t* base) {
       }
     }
     if (g_dump_this_frame && t) {
-      DumpTexturePng(g_device->RenderDevice(), g_device->Context(), t->texture,
-                     FrameDumpDirectory() /
-                         fmt::format("f{}_{:02}_{}_{:08X}_{}x{}_g{}.png", g_frame, ++g_dump_seq,
-                                     from_depth ? "depth" : "color", address, width, height,
-                                     guest_format));
+      DumpTexturePng(
+          g_device->RenderDevice(), g_device->Context(), t->texture,
+          FrameDumpDirectory() / fmt::format("f{}_{:02}_{}_{:08X}_{}x{}_g{}.png", g_frame,
+                                             ++g_dump_seq, from_depth ? "depth" : "color", address,
+                                             width, height, guest_format));
     }
     if (g_log_this_frame) {
       REXLOG_INFO(
@@ -1467,7 +1483,8 @@ void AfterResolve(const CallArgs& a, const uint8_t* base) {
   if (flags & 0x200) {
     SurfaceDesc ds;
     if (ReadSurface(base, Load32(base, dev + kDevDepthStencil), true, ds)) {
-      if (RenderTarget* depth_rt = GetRenderTarget(ds)) ClearDepth(*depth_rt, true, true, float(a.f1), 0);
+      if (RenderTarget* depth_rt = GetRenderTarget(ds))
+        ClearDepth(*depth_rt, true, true, float(a.f1), 0);
     }
   }
 }
@@ -1493,8 +1510,7 @@ void AfterDraw(const CallArgs& a, DrawKind kind, const uint8_t* base) {
     // provided the ring copy of the data.
     if (!g_pending_inline_draw.pending) return;
     g_pending_inline_draw.pending = false;
-    uint32_t initiator = (g_pending_inline_draw.count << 16) | (2u << 6) | (g_pending_inline_draw.prim & 0x3F);
-    SubmitDraw(dev, initiator, 0, 0, &g_pending_inline_draw, base);
+    SubmitDraw(dev, InlineDrawInitiator(g_pending_inline_draw), 0, 0, &g_pending_inline_draw, base);
     return;
   }
   uint32_t initiator, dma_base, dma_size;
@@ -1519,8 +1535,8 @@ void AfterEndVertices(const uint8_t* base) {
   std::lock_guard lock(g_mutex);
   if (!g_device || !g_draw_renderer || !g_pending_inline_draw.pending) return;
   g_pending_inline_draw.pending = false;
-  uint32_t initiator = (g_pending_inline_draw.count << 16) | (2u << 6) | (g_pending_inline_draw.prim & 0x3F);
-  SubmitDraw(g_pending_inline_draw.args.r[0], initiator, 0, 0, &g_pending_inline_draw, base);
+  SubmitDraw(g_pending_inline_draw.args.r[0], InlineDrawInitiator(g_pending_inline_draw), 0, 0,
+             &g_pending_inline_draw, base);
 }
 
 void SetButtonGlyphStyleSource(std::function<GlyphStyle()> source) {
@@ -1587,11 +1603,12 @@ void AfterSwap(const CallArgs& a, const uint8_t* base, bool log_next_frame) {
       DumpTexturePng(g_device->RenderDevice(), g_device->Context(), it->second.texture,
                      dir / fmt::format("f{:06}.png", g_frame));
     }
-    REXLOG_INFO("NATIVE-REC f{} front={:08X} {}x{} fmt={} rb_swap={} draws={} resolves={} "
-                "dest_info_missing={}{}",
-                g_frame, address, key.width, key.height, key.guest_format,
-                found && it->second.rb_swap, g_swap_draws, g_swap_resolves,
-                g_swap_dest_info_missing, found ? "" : " (front buffer missing)");
+    REXLOG_INFO(
+        "NATIVE-REC f{} front={:08X} {}x{} fmt={} rb_swap={} draws={} resolves={} "
+        "dest_info_missing={}{}",
+        g_frame, address, key.width, key.height, key.guest_format, found && it->second.rb_swap,
+        g_swap_draws, g_swap_resolves, g_swap_dest_info_missing,
+        found ? "" : " (front buffer missing)");
     rex::cvar::SetFlagByName("dante_record_frames", std::to_string(record - 1));
   }
   // Anti-alias the finished frame (3D and UI) before it is presented.

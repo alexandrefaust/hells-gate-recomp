@@ -23,6 +23,11 @@ inline const uint8_t* PhysicalPtr(const uint8_t* base, uint32_t physical) {
   return base + kPhysicalMirror + (physical & 0x1FFFFFFFu);
 }
 
+// [physical, physical + size) is non-empty and inside physical memory.
+inline bool IsPhysicalRange(uint32_t physical, uint32_t size) {
+  return size && physical < kPhysicalMemorySize && size <= kPhysicalMemorySize - physical;
+}
+
 inline uint16_t Load16(const uint8_t* base, uint32_t address) {
   uint16_t value;
   std::memcpy(&value, Ptr(base, address), sizeof(value));

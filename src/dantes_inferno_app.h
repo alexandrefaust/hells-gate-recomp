@@ -1,28 +1,28 @@
 #pragma once
 
-#include <rex/rex_app.h>
-#include <rex/cvar.h>
+#include "renderer/renderer.h"
+#include "renderer/renderer_config.h"
+#include "session_info.h"
+
 #include <rex/chrono/clock.h>
+#include <rex/cvar.h>
 #include <rex/filesystem.h>
-#include <rex/input/flags.h>
-#include <rex/input/input_system.h>
-#include <rex/ui/keybinds.h>
-#include <rex/ui/imgui_dialog.h>
 #include <rex/graphics/command_processor.h>
 #include <rex/graphics/graphics_system.h>
+#include <rex/input/flags.h>
+#include <rex/input/input_system.h>
+#include <rex/logging/macros.h>
+#include <rex/rex_app.h>
 #include <rex/system/function_dispatcher.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/xam/content_manager.h>
-#include <rex/logging/macros.h>
-
-#include "session_info.h"
-#include "renderer/renderer.h"
-#include "renderer/renderer_config.h"
+#include <rex/ui/imgui_dialog.h>
+#include <rex/ui/keybinds.h>
 
 #include <array>
 #include <chrono>
-#include <cstring>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <set>
@@ -70,17 +70,14 @@ class FpsOverlayDialog : public rex::ui::ImGuiDialog {
   void OnDraw(ImGuiIO& io) override {
     auto now = std::chrono::steady_clock::now();
 
-    uint64_t current_guest_frames =
-        command_processor_ ? command_processor_->swap_counter() : 0;
-    uint64_t current_vblanks =
-        command_processor_ ? command_processor_->vblank_counter() : 0;
+    uint64_t current_guest_frames = command_processor_ ? command_processor_->swap_counter() : 0;
+    uint64_t current_vblanks = command_processor_ ? command_processor_->vblank_counter() : 0;
     window_frames_ += current_guest_frames - last_guest_frame_count_;
     window_vblanks_ += current_vblanks - last_vblank_count_;
     last_guest_frame_count_ = current_guest_frames;
     last_vblank_count_ = current_vblanks;
 
-    double window_ms =
-        std::chrono::duration<double, std::milli>(now - window_start_).count();
+    double window_ms = std::chrono::duration<double, std::milli>(now - window_start_).count();
     if (window_ms >= kWindowMs) {
       double guest_fps = window_frames_ * 1000.0 / window_ms;
       double guest_ft_ms = window_frames_ ? window_ms / window_frames_ : 0.0;
@@ -114,13 +111,12 @@ class FpsOverlayDialog : public rex::ui::ImGuiDialog {
                      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                          ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
                          ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
-                         ImGuiWindowFlags_NoSavedSettings |
-                         ImGuiWindowFlags_AlwaysAutoResize |
+                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize |
                          ImGuiWindowFlags_NoFocusOnAppearing)) {
       ImGui::SetWindowFontScale(2.0f);
-      ImU32 fps_color = smoothed_fps_ >= 55.0f ? IM_COL32(80, 255, 80, 255) :
-                       smoothed_fps_ >= 30.0f ? IM_COL32(255, 220, 60, 255) :
-                                                IM_COL32(255, 80, 80, 255);
+      ImU32 fps_color = smoothed_fps_ >= 55.0f   ? IM_COL32(80, 255, 80, 255)
+                        : smoothed_fps_ >= 30.0f ? IM_COL32(255, 220, 60, 255)
+                                                 : IM_COL32(255, 80, 80, 255);
       ImGui::PushStyleColor(ImGuiCol_Text, fps_color);
       ImGui::Text("%.0f FPS", smoothed_fps_);
       ImGui::PopStyleColor();
@@ -135,10 +131,8 @@ class FpsOverlayDialog : public rex::ui::ImGuiDialog {
       ImGui::PopStyleColor();
 
       ImGui::Spacing();
-      ImGui::PlotLines("##frametime", frame_history_.data(),
-                       static_cast<int>(kHistorySize),
-                       static_cast<int>(history_idx_), nullptr,
-                       0.0f, 50.0f, ImVec2(220, 50));
+      ImGui::PlotLines("##frametime", frame_history_.data(), static_cast<int>(kHistorySize),
+                       static_cast<int>(history_idx_), nullptr, 0.0f, 50.0f, ImVec2(220, 50));
     }
     ImGui::End();
     ImGui::PopStyleVar(2);
@@ -164,15 +158,13 @@ class DantesInfernoApp : public rex::ReXApp {
  public:
   using rex::ReXApp::ReXApp;
 
-  static std::unique_ptr<rex::ui::WindowedApp> Create(
-      rex::ui::WindowedAppContext& ctx) {
-    return std::unique_ptr<DantesInfernoApp>(new DantesInfernoApp(ctx, "dantes_inferno",
-        PPCImageConfig));
+  static std::unique_ptr<rex::ui::WindowedApp> Create(rex::ui::WindowedAppContext& ctx) {
+    return std::unique_ptr<DantesInfernoApp>(
+        new DantesInfernoApp(ctx, "dantes_inferno", PPCImageConfig));
   }
 
   void OnConfigurePaths(rex::PathConfig& paths) override {
-    if (!paths.game_data_root.empty())
-      return;
+    if (!paths.game_data_root.empty()) return;
 
     const std::filesystem::path candidates[] = {
         rex::filesystem::GetExecutableFolder() / "game",
@@ -192,6 +184,7 @@ class DantesInfernoApp : public rex::ReXApp {
 
     REXCVAR_SET(input_backend, std::string("sdl"));
 
+    // Keyboard / mouse layout, unless the user or the launcher set one.
     auto keybind_default = [](const char* name, const char* value) {
       if (rex::cvar::GetFlagSource(name) == rex::cvar::Source::kDefault) {
         rex::cvar::SetFlagByName(name, value);
@@ -237,6 +230,8 @@ class DantesInfernoApp : public rex::ReXApp {
   void OnPreLaunchModule() override {
     uint8_t* membase = runtime()->memory()->virtual_membase();
 
+    // The save system's setjmp must not switch fibers (dantes_inferno_hooks.h):
+    // clear the fiber-switch callback. TU2 is recognised by its setjmp.
     auto* dispatcher = runtime()->function_dispatcher();
     const bool is_tu2 = dispatcher && dispatcher->GetFunction(0x82879110);
     uint32_t slot = is_tu2 ? 0x82CE68E4u : 0x82B101E4u;
@@ -311,71 +306,62 @@ class DantesInfernoApp : public rex::ReXApp {
     rex::chrono::Clock::set_guest_time_scalar(REXCVAR_GET(time_scalar));
 
     rex::cvar::RegisterChangeCallback("time_scalar",
-        [](std::string_view, std::string_view new_value) {
-          double scalar = std::stod(std::string(new_value));
-          if (scalar < 0.0) scalar = 0.0;
-          rex::chrono::Clock::set_guest_time_scalar(scalar);
+                                      [](std::string_view, std::string_view new_value) {
+                                        double scalar = std::stod(std::string(new_value));
+                                        if (scalar < 0.0) scalar = 0.0;
+                                        rex::chrono::Clock::set_guest_time_scalar(scalar);
+                                      });
+
+    rex::cvar::RegisterChangeCallback(
+        "ultrawide_target_aspect", [](std::string_view, std::string_view new_value) {
+          g_ultrawide_target_aspect = static_cast<float>(std::stod(std::string(new_value)));
         });
 
-    rex::cvar::RegisterChangeCallback("ultrawide_target_aspect",
-        [](std::string_view, std::string_view new_value) {
-          g_ultrawide_target_aspect =
-              static_cast<float>(std::stod(std::string(new_value)));
-        });
-
-    rex::ui::RegisterBind("bind_exit_game", "Alt+F4",
-                          "Exit game to desktop", [this] {
-      app_context().RequestDeferredQuit();
-    });
+    rex::ui::RegisterBind("bind_exit_game", "Alt+F4", "Exit game to desktop",
+                          [this] { app_context().RequestDeferredQuit(); });
 
     saved_vsync_ = rex::cvar::Query<bool>("vsync");
 
     if (REXCVAR_GET(show_fps_overlay) && imgui_drawer()) {
-      fps_overlay_ = std::make_unique<FpsOverlayDialog>(imgui_drawer(),
-                                                        GetCommandProcessor());
+      fps_overlay_ = std::make_unique<FpsOverlayDialog>(imgui_drawer(), GetCommandProcessor());
     }
 
-    rex::ui::RegisterBind("bind_fps_overlay", "F1",
-                          "Toggle FPS overlay", [this] {
+    rex::ui::RegisterBind("bind_fps_overlay", "F1", "Toggle FPS overlay", [this] {
       if (fps_overlay_) {
         fps_overlay_.reset();
       } else if (imgui_drawer()) {
-        fps_overlay_ = std::make_unique<FpsOverlayDialog>(imgui_drawer(),
-                                                          GetCommandProcessor());
+        fps_overlay_ = std::make_unique<FpsOverlayDialog>(imgui_drawer(), GetCommandProcessor());
       }
     });
 
-    rex::ui::RegisterBind("bind_pass_trace", "F6",
-                          "Trace GPU passes for 5 seconds", [this] {
+    rex::ui::RegisterBind("bind_pass_trace", "F6", "Trace GPU passes for 5 seconds", [] {
       bool ok = rex::cvar::SetFlagByName("gpu_pass_trace_frames", "300");
       REXLOG_INFO("PASS-TRACE trigger: set={} value={}", ok,
                   rex::cvar::Query<int32_t>("gpu_pass_trace_frames"));
     });
 
-    rex::ui::RegisterBind("bind_d3d_trace", "F8",
-                          "Trace D3D API calls for 3 frames", [this] {
+    rex::ui::RegisterBind("bind_d3d_trace", "F8", "Trace D3D API calls for 3 frames", [] {
       bool ok = rex::cvar::SetFlagByName("d3d_trace_frames", "3");
       REXLOG_INFO("D3D-TRACE trigger: set={}", ok);
     });
 
-    rex::ui::RegisterBind("bind_host_rendering", "F10",
-                          "Toggle Xenos host rendering (sync keeps running)", [this] {
-      bool enable = !rex::cvar::Query<bool>("gpu_host_rendering");
-      bool ok = rex::cvar::SetFlagByName("gpu_host_rendering", enable ? "true" : "false");
-      REXLOG_INFO("gpu_host_rendering={} (set={})", enable, ok);
-    });
+    rex::ui::RegisterBind(
+        "bind_host_rendering", "F10", "Toggle Xenos host rendering (sync keeps running)", [] {
+          bool enable = !rex::cvar::Query<bool>("gpu_host_rendering");
+          bool ok = rex::cvar::SetFlagByName("gpu_host_rendering", enable ? "true" : "false");
+          REXLOG_INFO("gpu_host_rendering={} (set={})", enable, ok);
+        });
 
     rex::ui::RegisterBind("bind_dante_debug_view", "F11",
-                          "renderer=dante: cycle the presented render target", [this] {
-      int32_t view = (rex::cvar::Query<int32_t>("dante_debug_view") + 1) % 9;
-      rex::cvar::SetFlagByName("dante_debug_view", std::to_string(view));
-      REXLOG_INFO("dante_debug_view={}", view);
-    });
+                          "renderer=dante: cycle the presented render target", [] {
+                            int32_t view = (rex::cvar::Query<int32_t>("dante_debug_view") + 1) % 9;
+                            rex::cvar::SetFlagByName("dante_debug_view", std::to_string(view));
+                            REXLOG_INFO("dante_debug_view={}", view);
+                          });
 
     rex::ui::RegisterBind("bind_rdoc_capture", "Insert",
-                          "Under RenderDoc: capture the next guest frames", [] {
-      rex::cvar::SetFlagByName("rdoc_capture_frame", "true");
-    });
+                          "Under RenderDoc: capture the next guest frames",
+                          [] { rex::cvar::SetFlagByName("rdoc_capture_frame", "true"); });
 
     rex::ui::RegisterBind("bind_dante_smaa", "End", "renderer=dante: toggle SMAA", [] {
       bool enabled = !rex::cvar::Query<bool>("dante_smaa");
@@ -384,25 +370,22 @@ class DantesInfernoApp : public rex::ReXApp {
     });
 
     rex::ui::RegisterBind("bind_dante_replay", "Home",
-                          "renderer=dante: save the instant replay (last 3 seconds)", [] {
-      rex::cvar::SetFlagByName("dante_replay_dump", "true");
-    });
+                          "renderer=dante: save the instant replay (last 3 seconds)",
+                          [] { rex::cvar::SetFlagByName("dante_replay_dump", "true"); });
 
-    rex::ui::RegisterBind("bind_dante_record", "F5",
-                          "renderer=dante: record the next 3600 presented frames", [this] {
-      bool start = rex::cvar::Query<int32_t>("dante_record_frames") == 0;
-      rex::cvar::SetFlagByName("dante_record_frames", start ? "3600" : "0");
-      REXLOG_INFO("dante_record_frames: {}", start ? "recording 3600 frames" : "stopped");
-    });
+    rex::ui::RegisterBind(
+        "bind_dante_record", "F5", "renderer=dante: record the next 3600 presented frames", [] {
+          bool start = rex::cvar::Query<int32_t>("dante_record_frames") == 0;
+          rex::cvar::SetFlagByName("dante_record_frames", start ? "3600" : "0");
+          REXLOG_INFO("dante_record_frames: {}", start ? "recording 3600 frames" : "stopped");
+        });
 
-    rex::ui::RegisterBind("bind_verify_gpu_state", "F9",
-                          "Verify the GPU state of 3 frames", [] {
+    rex::ui::RegisterBind("bind_verify_gpu_state", "F9", "Verify the GPU state of 3 frames", [] {
       bool ok = rex::cvar::SetFlagByName("verify_gpu_state_frames", "3");
       REXLOG_INFO("NATIVE-OBS trigger: set={}", ok);
     });
 
-    rex::ui::RegisterBind("bind_fast_forward", "F2",
-                          "Toggle 50x fast-forward", [this] {
+    rex::ui::RegisterBind("bind_fast_forward", "F2", "Toggle 50x fast-forward", [this] {
       double current = REXCVAR_GET(time_scalar);
       bool fast = current > 1.0;
       double target = fast ? 1.0 : 50.0;
@@ -434,8 +417,7 @@ class DantesInfernoApp : public rex::ReXApp {
     }
 
     auto is_hex_name = [](const std::string& s, size_t len) {
-      return s.size() == len &&
-             s.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos;
+      return s.size() == len && s.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos;
     };
 
     std::filesystem::path marker = root / ".installed";
@@ -469,16 +451,16 @@ class DantesInfernoApp : public rex::ReXApp {
       std::filesystem::path dest;
       if (is_hex_name(name, 16)) {
         dest = user_root / name;
-      } else if (is_hex_name(name, 8) &&
-                 std::filesystem::exists(entry.path() / "Headers")) {
+      } else if (is_hex_name(name, 8) && std::filesystem::exists(entry.path() / "Headers")) {
         dest = content_root / name;
       }
       if (!dest.empty()) {
         std::error_code ec;
         std::filesystem::create_directories(dest, ec);
         std::filesystem::copy(entry.path(), dest,
-            std::filesystem::copy_options::recursive |
-            std::filesystem::copy_options::update_existing, ec);
+                              std::filesystem::copy_options::recursive |
+                                  std::filesystem::copy_options::update_existing,
+                              ec);
         if (ec) {
           REXLOG_WARN("DLC content mirror failed for {}: {}", name, ec.message());
         } else {
@@ -542,10 +524,9 @@ class DantesInfernoApp : public rex::ReXApp {
 
  private:
   rex::graphics::CommandProcessor* GetCommandProcessor() {
-    auto* gfx_sys = runtime() ? runtime()->graphics_system() : nullptr;
-    auto* con_sys =
-        dynamic_cast<rex::graphics::GraphicsSystem*>(gfx_sys);
-    return con_sys ? con_sys->command_processor() : nullptr;
+    auto* graphics = dynamic_cast<rex::graphics::GraphicsSystem*>(
+        runtime() ? runtime()->graphics_system() : nullptr);
+    return graphics ? graphics->command_processor() : nullptr;
   }
 
   std::unique_ptr<FpsOverlayDialog> fps_overlay_;

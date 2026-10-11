@@ -64,8 +64,7 @@ void ConfigureSyncOnlyGpu() {
 }
 
 void ApplyNativeRenderScale() {
-  const std::string mode =
-      rex::cvar::Query<std::string>("native_render_scale");
+  const std::string mode = rex::cvar::Query<std::string>("native_render_scale");
   if (mode.empty() || mode == "off") {
     return;
   }
@@ -78,8 +77,7 @@ void ApplyNativeRenderScale() {
     const bool fullscreen = rex::cvar::Query<bool>("fullscreen");
     const int window_height = rex::cvar::Query<int32_t>("window_height");
     const int target_height =
-        fullscreen ? GetSystemMetrics(SM_CYSCREEN)
-                   : (window_height > 0 ? window_height : 720);
+        fullscreen ? GetSystemMetrics(SM_CYSCREEN) : (window_height > 0 ? window_height : 720);
     scale = (target_height + 359) / 720;
   } else {
     scale = std::atoi(mode.c_str());

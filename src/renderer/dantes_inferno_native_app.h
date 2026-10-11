@@ -8,8 +8,7 @@ class DantesInfernoNativeApp : public DantesInfernoApp {
  public:
   using DantesInfernoApp::DantesInfernoApp;
 
-  static std::unique_ptr<rex::ui::WindowedApp> Create(
-      rex::ui::WindowedAppContext& ctx) {
+  static std::unique_ptr<rex::ui::WindowedApp> Create(rex::ui::WindowedAppContext& ctx) {
     return std::unique_ptr<DantesInfernoNativeApp>(
         new DantesInfernoNativeApp(ctx, "dantes_inferno", PPCImageConfig));
   }

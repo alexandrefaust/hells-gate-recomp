@@ -22,9 +22,8 @@ class TextureCache {
  public:
   // Native texture written by Resolve for (guest address, width, height, guest
   // format); rb_swap: guest memory has red and blue exchanged relative to it.
-  using ResolveLookup =
-      std::function<Diligent::ITexture*(uint32_t address, uint32_t width, uint32_t height,
-                                        uint32_t guest_format, bool& rb_swap)>;
+  using ResolveLookup = std::function<Diligent::ITexture*(
+      uint32_t address, uint32_t width, uint32_t height, uint32_t guest_format, bool& rb_swap)>;
 
   // A guest texture just loaded: level 0 of slice 0 in host block layout.
   struct LoadedTexture {
@@ -66,7 +65,6 @@ class TextureCache {
                                  uint32_t mip_filter, uint32_t aniso_filter);
 
   void LogStats();
-
 
  private:
   struct Impl;

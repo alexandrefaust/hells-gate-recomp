@@ -5,8 +5,8 @@
 
 #include "state_verifier.h"
 
-#include "renderer.h"
 #include "guest_gpu_state.h"
+#include "renderer.h"
 
 #include <rex/cvar.h>
 #include <rex/logging/macros.h>
@@ -67,7 +67,7 @@ struct ObservedDraw {
   uint32_t device = 0;
   uint32_t write_ptr_before = 0;  // guest physical
   uint32_t write_ptr_end = 0;     // guest physical, just past the last dword written
-  uint32_t inline_data = 0;  // BeginVertices return value (inline draws)
+  uint32_t inline_data = 0;       // BeginVertices return value (inline draws)
   uint32_t literal_dwords = 0;
   uint32_t buffer_constant_dwords = 0;
   std::atomic<bool> ready{false};
@@ -141,19 +141,20 @@ void LogDecodedDraw(const ObservedDraw& e, const uint8_t* base) {
   auto shadow_reg = [&e](uint32_t reg) -> uint32_t {
     uint32_t index = 0;
     for (const auto& range : kShadowRanges) {
-      if (reg >= range.reg && reg < range.reg + range.count) return e.shadow[index + reg - range.reg];
+      if (reg >= range.reg && reg < range.reg + range.count)
+        return e.shadow[index + reg - range.reg];
       index += range.count;
     }
     return 0;
   };
 
-  std::string line = fmt::format("NATIVE-OBS draw #{} {} prim={} count={} surface_info={:08X}",
-                                 e.seq,
-                                 e.kind == DrawKind::kIndexed  ? "indexed"
-                                 : e.kind == DrawKind::kAuto   ? "auto"
-                                 : e.kind == DrawKind::kInline ? "inline"
-                                                               : "inline-up",
-                                 e.prim, e.count, shadow_reg(0x2000));
+  std::string line =
+      fmt::format("NATIVE-OBS draw #{} {} prim={} count={} surface_info={:08X}", e.seq,
+                  e.kind == DrawKind::kIndexed  ? "indexed"
+                  : e.kind == DrawKind::kAuto   ? "auto"
+                  : e.kind == DrawKind::kInline ? "inline"
+                                                : "inline-up",
+                  e.prim, e.count, shadow_reg(0x2000));
   for (uint32_t i = 0; i < 4; ++i) {
     uint32_t rt = Load32(base, dev + kDevRenderTargets + i * 4);
     if (rt) line += fmt::format(" RT{}={:08X}", i, rt);
@@ -194,8 +195,6 @@ void LogDecodedDraw(const ObservedDraw& e, const uint8_t* base) {
   REXLOG_INFO("{}", line);
 }
 
-bool InstallCpObserver();
-
 void Report() {
   std::lock_guard lock(g_stats_mutex);
   REXLOG_INFO(
@@ -203,8 +202,8 @@ void Report() {
       "wait_timeouts={} inline_stream ok={} bad={} literal_dwords={} buffer_constant_dwords={} "
       "draws_without_usage={} memexport_draws={} mismatching_registers={}",
       g_compared_draws, g_clean_draws, g_missed_entries, g_unmatched_cp_draws, g_wait_timeouts,
-      g_inline_ok, g_inline_bad, g_literal_dwords, g_buffer_constant_dwords,
-      g_draws_without_usage, g_memexport_draws, g_reg_stats.size());
+      g_inline_ok, g_inline_bad, g_literal_dwords, g_buffer_constant_dwords, g_draws_without_usage,
+      g_memexport_draws, g_reg_stats.size());
   REXLOG_INFO("NATIVE-OBS shaders: vs match={} mismatch={} ps mismatch={}", g_vs_match,
               g_vs_mismatch, g_ps_mismatch);
   REXLOG_INFO("NATIVE-OBS index buffers: match={} mismatch={}", g_index_match, g_index_mismatch);
@@ -275,6 +274,7 @@ size_t FindEntry(uint32_t packet_end) {
 void OnCpDraw(void*, const uint32_t* regs, uint32_t reg_count, uint32_t draw_initiator,
               uint32_t packet_end, const RexGpuDrawUsage* usage) {
   if (!g_cp_active.load(std::memory_order_acquire)) return;
+  // Older plugins pass a shorter struct.
   if (usage && usage->struct_size < sizeof(RexGpuDrawUsage)) usage = nullptr;
 
   std::unique_lock lock(g_queue_mutex);
@@ -326,18 +326,18 @@ void OnCpDraw(void*, const uint32_t* regs, uint32_t reg_count, uint32_t draw_ini
   g_buffer_constant_dwords += entry->buffer_constant_dwords;
   bool is_inline = entry->kind == DrawKind::kInline || entry->kind == DrawKind::kInlineUP;
   if (!usage) ++g_draws_without_usage;
-  if (usage && usage->struct_size >= sizeof(RexGpuDrawUsage) && usage->index_base) {
+  if (usage && usage->index_base) {
     bool ok = usage->index_base == entry->index_base && usage->index_count == entry->index_count &&
               usage->index_format == entry->index_format;
     ++(ok ? g_index_match : g_index_mismatch);
     if (!ok && ++g_index_mismatch_logged <= 24) {
-      REXLOG_INFO("NATIVE-OBS index mismatch draw #{} prim={} ours={:08X}x{} f{} xenos={:08X}x{} f{}",
-                  entry->seq, entry->prim, entry->index_base, entry->index_count,
-                  entry->index_format, usage->index_base, usage->index_count,
-                  usage->index_format);
+      REXLOG_INFO(
+          "NATIVE-OBS index mismatch draw #{} prim={} ours={:08X}x{} f{} xenos={:08X}x{} f{}",
+          entry->seq, entry->prim, entry->index_base, entry->index_count, entry->index_format,
+          usage->index_base, usage->index_count, usage->index_format);
     }
   }
-  if (usage && usage->struct_size >= sizeof(RexGpuDrawUsage) && entry->vs_hash) {
+  if (usage && entry->vs_hash) {
     bool vs_ok = usage->vs_ucode_hash == entry->vs_hash;
     bool ps_ok = !entry->ps_hash || usage->ps_ucode_hash == entry->ps_hash;
     ++(vs_ok ? g_vs_match : g_vs_mismatch);
@@ -398,8 +398,8 @@ bool InstallCpObserver() {
   SetDrawObserverFn set_observer = nullptr;
   for (HMODULE module : {GetModuleHandleA("rexgpu-xenos.dll"), GetModuleHandleA(nullptr)}) {
     if (!module) continue;
-    set_observer = reinterpret_cast<SetDrawObserverFn>(
-        GetProcAddress(module, "rex_gpu_set_draw_observer"));
+    set_observer =
+        reinterpret_cast<SetDrawObserverFn>(GetProcAddress(module, "rex_gpu_set_draw_observer"));
     if (set_observer) break;
   }
   if (!set_observer) return false;

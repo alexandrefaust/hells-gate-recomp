@@ -9,7 +9,6 @@ namespace Diligent {
 struct IRenderDevice;
 struct IDeviceContext;
 struct ITextureView;
-struct IShader;
 struct IPipelineState;
 }  // namespace Diligent
 
@@ -36,9 +35,6 @@ class VulkanDevice {
 
   // Blits a shader-resource view to the swapchain (letterboxed) and presents.
   bool PresentTexture(Diligent::ITextureView* srv, uint32_t sync_interval = 1);
-
-  // GLSL (Vulkan) -> SPIR-V -> shader; the caller owns the returned reference.
-  Diligent::IShader* CreateGlslShader(const char* source, bool pixel, const char* name);
 
   // One triangle covering the target, shaded by `pixel_source` (GLSL) into a
   // single render target, no depth; resources default to dynamic. The

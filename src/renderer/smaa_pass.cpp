@@ -107,9 +107,7 @@ void main() {
 }
 )";
 
-std::string PixelSource(const char* main) {
-  return std::string(kPrelude) + kSmaaSource + main;
-}
+std::string PixelSource(const char* main) { return std::string(kPrelude) + kSmaaSource + main; }
 
 struct Pass {
   dl::RefCntAutoPtr<dl::IPipelineState> pso;
@@ -123,7 +121,7 @@ struct Pass {
 }  // namespace
 
 struct SmaaPass::Impl {
-  renderer::VulkanDevice* device = nullptr;
+  VulkanDevice* device = nullptr;
   bool failed = false;
   dl::RefCntAutoPtr<dl::IBuffer> constants;
   dl::RefCntAutoPtr<dl::ISampler> linear, point;
@@ -252,7 +250,7 @@ struct SmaaPass::Impl {
   }
 };
 
-SmaaPass::SmaaPass(renderer::VulkanDevice* device) : impl_(std::make_unique<Impl>()) {
+SmaaPass::SmaaPass(VulkanDevice* device) : impl_(std::make_unique<Impl>()) {
   impl_->device = device;
   if (!impl_->Init()) {
     impl_->failed = true;

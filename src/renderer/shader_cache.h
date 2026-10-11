@@ -29,7 +29,7 @@ struct TranslatedShaders {
   // Analyzed guest shaders (constant maps, vertex/texture bindings).
   const rex::graphics::SpirvShader* vertex_info = nullptr;
   const rex::graphics::SpirvShader* pixel_info = nullptr;
-  uint64_t vertex_key = 0;             // ucode hash ^ modification, for pipeline keys
+  uint64_t vertex_key = 0;  // ucode hash ^ modification, for pipeline keys
   uint64_t pixel_key = 0;
 };
 

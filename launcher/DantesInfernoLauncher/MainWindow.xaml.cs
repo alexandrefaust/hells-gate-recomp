@@ -20,6 +20,10 @@ namespace DantesInferno.Launcher
         private string _launcherLanguage = LauncherLocalizer.DefaultLanguage;
         private bool _populatingLauncherLanguage;
 
+        private const string IssuesUrl = "https://github.com/florinp93/hells-gate-recomp/issues";
+        // Texture filtering choices; index 0 ("Default") leaves the game's own.
+        private static readonly int[] AnisoLevels = { 0, 1, 2, 4, 8, 16 };
+
         public MainWindow()
         {
             InitializeComponent();
@@ -49,10 +53,7 @@ namespace DantesInferno.Launcher
                 if (release.Version <= localVersion)
                     return;
 
-                var asset = release.Assets.FirstOrDefault(
-                    a => a.Name.Equals("DantesInfernoInstaller.exe",
-                        StringComparison.OrdinalIgnoreCase));
-                if (asset == null)
+                if (FindInstallerAsset(release) == null)
                     return;
 
                 Dispatcher.Invoke(new Action(() =>
@@ -140,11 +141,9 @@ namespace DantesInferno.Launcher
             FrameRateCombo.SelectedValue = DisplayOptions.FrameRateFor(_config, _displayAspect);
 
             AnisoCombo.ItemsSource = new List<string> { "Default", "1x", "2x", "4x", "8x", "16x" };
-            int aniso = _config.AnisotropicOverride;
-            if (aniso < 0) aniso = 0;
-            else aniso = Array.IndexOf(new[] { 0, 1, 2, 4, 8, 16 }, aniso);
-            if (aniso < 0) aniso = 0;
-            AnisoCombo.SelectedIndex = aniso;
+            int aniso = _config.AnisotropicOverride < 0
+                ? 0 : Array.IndexOf(AnisoLevels, _config.AnisotropicOverride);
+            AnisoCombo.SelectedIndex = Math.Max(aniso, 0);
 
             PopulateShadowCombo(_config.ShadowScale);
 
@@ -510,7 +509,7 @@ namespace DantesInferno.Launcher
             if (File.Exists(exePath) && Directory.Exists(gameData))
                 PlayStatusText.Text = LauncherLocalizer.Get(_launcherLanguage, LauncherLocalizer.PlayStatusReady);
             else
-                PlayStatusText.Text = LauncherLocalizer.Get(_launcherLanguage, "play_status_missing");
+                PlayStatusText.Text = LauncherLocalizer.Get(_launcherLanguage, LauncherLocalizer.PlayStatusMissing);
         }
 
         // Logs kept from earlier sessions; the session being started adds one.
@@ -524,7 +523,6 @@ namespace DantesInferno.Launcher
                 if (!Directory.Exists(logsDir))
                     return;
 
-                // Keep the newest logs (earlier sessions, for crash reports).
                 var old = Directory.GetFiles(logsDir, "*.log", SearchOption.AllDirectories)
                     .OrderByDescending(f => File.GetLastWriteTimeUtc(f))
                     .Skip(KeptLogFiles);
@@ -561,13 +559,7 @@ namespace DantesInferno.Launcher
                 _config.ShadowScale = shadowScale;
 
             int anisoIdx = AnisoCombo.SelectedIndex;
-            if (anisoIdx <= 0)
-                _config.AnisotropicOverride = -1;
-            else
-            {
-                int[] anisoValues = { 0, 1, 2, 4, 8, 16 };
-                _config.AnisotropicOverride = anisoValues[anisoIdx];
-            }
+            _config.AnisotropicOverride = anisoIdx <= 0 ? -1 : AnisoLevels[anisoIdx];
 
             _config.Fullscreen = FullscreenCheck.IsChecked ?? true;
 
@@ -684,7 +676,7 @@ namespace DantesInferno.Launcher
             else
                 message += "No log file was found in " + logsDir + "\n\n";
             message += "Please report this on GitHub and attach the log file.\n";
-            message += "https://github.com/florinp93/dantes-inferno/issues\n\n";
+            message += IssuesUrl + "\n\n";
             message += "Click OK to open the log folder and the GitHub issues page.";
 
             var result = MessageBox.Show(message, "Game Crashed", MessageBoxButton.OKCancel, MessageBoxImage.Error);
@@ -701,7 +693,7 @@ namespace DantesInferno.Launcher
 
                 try
                 {
-                    Process.Start(new ProcessStartInfo("https://github.com/florinp93/dantes-inferno/issues") { UseShellExecute = true });
+                    Process.Start(new ProcessStartInfo(IssuesUrl) { UseShellExecute = true });
                 }
                 catch { }
             }
@@ -800,6 +792,12 @@ namespace DantesInferno.Launcher
 
         private ReleaseInfo _pendingUpdate;
 
+        private static ReleaseAsset FindInstallerAsset(ReleaseInfo release)
+        {
+            return release.Assets.FirstOrDefault(
+                a => a.Name.Equals("DantesInfernoInstaller.exe", StringComparison.OrdinalIgnoreCase));
+        }
+
         private void CheckUpdates_Click(object sender, RoutedEventArgs e)
         {
             UpdateStatusText.Text = "Checking for updates...";
@@ -810,11 +808,7 @@ namespace DantesInferno.Launcher
                 var localVersion = GitHubUpdater.GetLocalVersion(_installDir);
                 if (release.Version > localVersion)
                 {
-                    var asset = release.Assets.FirstOrDefault(
-                        a => a.Name.Equals("DantesInfernoInstaller.exe",
-                            StringComparison.OrdinalIgnoreCase));
-
-                    if (asset != null)
+                    if (FindInstallerAsset(release) != null)
                     {
                         _pendingUpdate = release;
                         DownloadUpdateButton.Visibility = Visibility.Visible;
@@ -853,9 +847,7 @@ namespace DantesInferno.Launcher
                 return;
             }
 
-            var asset = _pendingUpdate.Assets.FirstOrDefault(
-                a => a.Name.Equals("DantesInfernoInstaller.exe",
-                    StringComparison.OrdinalIgnoreCase));
+            var asset = FindInstallerAsset(_pendingUpdate);
             if (asset == null)
             {
                 MessageBox.Show("The latest release has no installer asset to download.",

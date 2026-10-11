@@ -62,12 +62,12 @@ struct Cell {
   float* at(int x, int y) { return image.at(x0 + x, y0 + y); }
 };
 
-float Lum(const float* p) { return p[0] * 0.299f + p[1] * 0.587f + p[2] * 0.114f; }
-float Sat(const float* p) {
+float Luminance(const float* p) { return p[0] * 0.299f + p[1] * 0.587f + p[2] * 0.114f; }
+float Saturation(const float* p) {
   return std::max({p[0], p[1], p[2]}) - std::min({p[0], p[1], p[2]});
 }
 
-// ---- BC3 (DXT5) decoding -------------------------------------------------
+// BC3 (DXT5) decoding
 
 void Decode565(uint16_t c, float out[3]) {
   out[0] = float((c >> 11) & 31) / 31.0f;
@@ -118,7 +118,7 @@ Image DecodeBc3(const uint8_t* blocks, int width, int height) {
   return image;
 }
 
-// ---- Masks ---------------------------------------------------------------
+// Masks
 
 // Dilation (grow) or erosion of a binary mask with a k x k square.
 std::vector<bool> Morph(const std::vector<bool>& in, int w, int h, int k, bool dilate) {
@@ -196,7 +196,7 @@ void Over(float* dst, const float rgb[3], float a) {
   dst[3] = std::max(dst[3], a);
 }
 
-// ---- Text (GDI, Palatino Linotype bold, drawn at 4x) ------------------------
+// Text (GDI, Palatino Linotype bold, drawn at 4x)
 
 constexpr int kTextScale = 4;
 
@@ -216,7 +216,8 @@ class GdiCanvas {
     bi.bmiHeader.biBitCount = 32;
     bi.bmiHeader.biCompression = BI_RGB;
     dc_ = CreateCompatibleDC(nullptr);
-    bitmap_ = CreateDIBSection(dc_, &bi, DIB_RGB_COLORS, reinterpret_cast<void**>(&bits_), nullptr, 0);
+    bitmap_ =
+        CreateDIBSection(dc_, &bi, DIB_RGB_COLORS, reinterpret_cast<void**>(&bits_), nullptr, 0);
     old_bitmap_ = SelectObject(dc_, bitmap_);
     SetGraphicsMode(dc_, GM_ADVANCED);
     SetBkMode(dc_, TRANSPARENT);
@@ -370,7 +371,7 @@ TextLayer ArchedText(int w, int h, const std::wstring& text, float cx, float cy,
   return layer;
 }
 
-// ---- Symbols (anti-aliased distance shapes) ---------------------------------
+// Symbols (anti-aliased distance shapes)
 
 float SegmentDistance(float px, float py, float ax, float ay, float bx, float by) {
   float dx = bx - ax, dy = by - ay;
@@ -406,7 +407,8 @@ Mask SymbolMask(int n, Symbol kind) {
           }
           d = std::min({SegmentDistance(px, py, vx[0], vy[0], vx[1], vy[1]),
                         SegmentDistance(px, py, vx[1], vy[1], vx[2], vy[2]),
-                        SegmentDistance(px, py, vx[2], vy[2], vx[0], vy[0])}) - wid / 2;
+                        SegmentDistance(px, py, vx[2], vy[2], vx[0], vy[0])}) -
+              wid / 2;
           break;
         }
         case Symbol::kCross: {
@@ -430,7 +432,7 @@ Mask SymbolMask(int n, Symbol kind) {
   return m;
 }
 
-// ---- The PlayStation sheet ------------------------------------------------
+// The PlayStation sheet
 
 const float kCrossColor[3] = {124 / 255.0f, 178 / 255.0f, 232 / 255.0f};
 const float kCircleColor[3] = {240 / 255.0f, 96 / 255.0f, 96 / 255.0f};
@@ -456,7 +458,7 @@ std::vector<bool> ClearSphereLetter(Cell& cell, int n, float letter_lum) {
       float rr = std::hypot(x - (n - 1) / 2.0f, y - (n - 1) / 2.0f);
       bool in = rr < n / 2.0f - 3.5f && p[3] > 0.5f;
       inside[size_t(y) * n + x] = in;
-      letter[size_t(y) * n + x] = in && (Lum(p) < letter_lum || Sat(p) < 0.18f);
+      letter[size_t(y) * n + x] = in && (Luminance(p) < letter_lum || Saturation(p) < 0.18f);
     }
   }
   letter = Morph(letter, n, n, 3, true);
@@ -470,12 +472,12 @@ std::vector<bool> ClearSphereLetter(Cell& cell, int n, float letter_lum) {
 enum class Finish { kLacquer, kStone };
 void Refinish(float* p, Finish finish) {
   if (finish == Finish::kLacquer) {
-    float dark = std::clamp(0.06f + Lum(p) * 0.42f, 0.0f, 1.0f);
+    float dark = std::clamp(0.06f + Luminance(p) * 0.42f, 0.0f, 1.0f);
     p[0] = dark;
     p[1] = dark;
     p[2] = std::min(1.0f, dark * 1.04f);
   } else {
-    float shade = std::clamp(0.38f + Lum(p) * 0.85f, 0.0f, 1.0f);
+    float shade = std::clamp(0.38f + Luminance(p) * 0.85f, 0.0f, 1.0f);
     p[0] = shade * 0.93f;
     p[1] = shade * 0.9f;
     p[2] = shade * 0.82f;
@@ -525,7 +527,7 @@ std::vector<bool> ClearPlateLetters(Cell& cell, const int box[4], const int lett
       size_t i = size_t(y) * cell.w + x;
       bool near_letters = x + box[0] >= letters[0] - 2 && x + box[0] < letters[2] + 2 &&
                           y + box[1] >= letters[1] - 2 && y + box[1] < letters[3] + 2;
-      dark[i] = interior[i] && near_letters && Lum(cell.at(x, y)) < 0.5f;
+      dark[i] = interior[i] && near_letters && Luminance(cell.at(x, y)) < 0.5f;
     }
   }
   auto mask = Morph(dark, cell.w, cell.h, 3, true);
@@ -540,8 +542,8 @@ const float kWhite[3] = {238 / 255.0f, 234 / 255.0f, 226 / 255.0f};
 void Plate(Image& img, const int box[4], const int letters[4], const wchar_t* label) {
   Cell cell{img, box[0], box[1], box[2] - box[0], box[3] - box[1]};
   ClearPlateLetters(cell, box, letters);
-  float lb[4] = {float(letters[0] - box[0]), float(letters[1] - box[1]),
-                 float(letters[2] - box[0]), float(letters[3] - box[1])};
+  float lb[4] = {float(letters[0] - box[0]), float(letters[1] - box[1]), float(letters[2] - box[0]),
+                 float(letters[3] - box[1])};
   int font_px = int((lb[3] - lb[1]) * 1.18f);
   Mask text = CenteredText(cell.w, cell.h, label, lb, font_px);
   for (int y = 0; y < cell.h; ++y) {
@@ -549,7 +551,7 @@ void Plate(Image& img, const int box[4], const int letters[4], const wchar_t* la
   }
 }
 
-// ---- Keyboard / mouse labels -----------------------------------------------
+// Keyboard / mouse labels
 
 // What a binding shows: a mouse button (0 left, 1 right, 2 middle; text is
 // its short name) or text.
@@ -586,8 +588,8 @@ KeyLabel ParseBinding(const std::string& binding) {
     const wchar_t* text;
   };
   static constexpr Mouse kMouse[] = {
-      {"LMB", 0, L"LMB"}, {"MouseLeft", 0, L"LMB"}, {"RMB", 1, L"RMB"},
-      {"MouseRight", 1, L"RMB"}, {"MMB", 2, L"MMB"}, {"MouseMiddle", 2, L"MMB"},
+      {"LMB", 0, L"LMB"},        {"MouseLeft", 0, L"LMB"}, {"RMB", 1, L"RMB"},
+      {"MouseRight", 1, L"RMB"}, {"MMB", 2, L"MMB"},       {"MouseMiddle", 2, L"MMB"},
   };
   for (const Mouse& m : kMouse) {
     if (s != m.name) continue;
@@ -595,24 +597,24 @@ KeyLabel ParseBinding(const std::string& binding) {
     return {-1, text + m.text};
   }
   static const std::unordered_map<std::string_view, const wchar_t*> kNames = {
-      {"Space", L"SPACE"},       {"Shift", L"SHIFT"},       {"LeftShift", L"SHIFT"},
-      {"RightShift", L"SHIFT"},  {"Control", L"CTRL"},      {"Ctrl", L"CTRL"},
-      {"LeftCtrl", L"CTRL"},     {"RightCtrl", L"CTRL"},    {"LeftControl", L"CTRL"},
-      {"RightControl", L"CTRL"}, {"Alt", L"ALT"},           {"LeftAlt", L"ALT"},
-      {"RightAlt", L"ALT"},      {"Escape", L"ESC"},        {"Esc", L"ESC"},
-      {"Return", L"ENTER"},      {"Enter", L"ENTER"},       {"NumpadEnter", L"ENTER"},
-      {"Tab", L"TAB"},           {"Backspace", L"BKSP"},    {"Delete", L"DEL"},
-      {"Insert", L"INS"},        {"Home", L"HOME"},         {"End", L"END"},
-      {"PageUp", L"PGUP"},       {"PageDown", L"PGDN"},     {"Left", L"\u2190"},
-      {"Up", L"\u2191"},         {"Right", L"\u2192"},      {"Down", L"\u2193"},
-      {"CapsLock", L"CAPS"},     {"NumLock", L"NUM"},       {"ScrollLock", L"SCRL"},
-      {"PrintScreen", L"PRTSC"}, {"Pause", L"PAUSE"},       {"Backtick", L"`"},
-      {"Minus", L"-"},           {"Plus", L"="},            {"Comma", L","},
-      {"Period", L"."},          {"Semicolon", L";"},       {"Slash", L"/"},
-      {"Backslash", L"\\"},     {"LBracket", L"["},        {"RBracket", L"]"},
-      {"Quote", L"'"},           {"NumpadPlus", L"NUM+"},   {"NumpadMinus", L"NUM-"},
-      {"NumpadStar", L"NUM*"},   {"NumpadSlash", L"NUM/"},  {"NumpadDecimal", L"NUM."},
-      {"Mouse4", L"M4"},         {"Mouse5", L"M5"},         {"XButton1", L"M4"},
+      {"Space", L"SPACE"},       {"Shift", L"SHIFT"},      {"LeftShift", L"SHIFT"},
+      {"RightShift", L"SHIFT"},  {"Control", L"CTRL"},     {"Ctrl", L"CTRL"},
+      {"LeftCtrl", L"CTRL"},     {"RightCtrl", L"CTRL"},   {"LeftControl", L"CTRL"},
+      {"RightControl", L"CTRL"}, {"Alt", L"ALT"},          {"LeftAlt", L"ALT"},
+      {"RightAlt", L"ALT"},      {"Escape", L"ESC"},       {"Esc", L"ESC"},
+      {"Return", L"ENTER"},      {"Enter", L"ENTER"},      {"NumpadEnter", L"ENTER"},
+      {"Tab", L"TAB"},           {"Backspace", L"BKSP"},   {"Delete", L"DEL"},
+      {"Insert", L"INS"},        {"Home", L"HOME"},        {"End", L"END"},
+      {"PageUp", L"PGUP"},       {"PageDown", L"PGDN"},    {"Left", L"\u2190"},
+      {"Up", L"\u2191"},         {"Right", L"\u2192"},     {"Down", L"\u2193"},
+      {"CapsLock", L"CAPS"},     {"NumLock", L"NUM"},      {"ScrollLock", L"SCRL"},
+      {"PrintScreen", L"PRTSC"}, {"Pause", L"PAUSE"},      {"Backtick", L"`"},
+      {"Minus", L"-"},           {"Plus", L"="},           {"Comma", L","},
+      {"Period", L"."},          {"Semicolon", L";"},      {"Slash", L"/"},
+      {"Backslash", L"\\"},      {"LBracket", L"["},       {"RBracket", L"]"},
+      {"Quote", L"'"},           {"NumpadPlus", L"NUM+"},  {"NumpadMinus", L"NUM-"},
+      {"NumpadStar", L"NUM*"},   {"NumpadSlash", L"NUM/"}, {"NumpadDecimal", L"NUM."},
+      {"Mouse4", L"M4"},         {"Mouse5", L"M5"},        {"XButton1", L"M4"},
       {"XButton2", L"M5"},
   };
   auto it = kNames.find(s);
@@ -729,26 +731,30 @@ void KeyPlate(Image& img, const int box[4], const int letters[4], const KeyLabel
   }
   if (fb[2] < 0) return;
   const float text_box[4] = {fb[0] + 1, fb[1] + 2, fb[2], fb[3] - 1};
-  const float icon_box[4] = {fb[0] + 1, std::max(0.0f, fb[1] - 1),
-                             fb[2], std::min(float(cell.h), fb[3] + 2)};
+  const float icon_box[4] = {fb[0] + 1, std::max(0.0f, fb[1] - 1), fb[2],
+                             std::min(float(cell.h), fb[3] + 2)};
   DrawLabel(cell, label, text_box, icon_box, kInk);
 }
 
 // White outlined letters in a w x h cell, replaced by label.
-void WhiteLabel(Image& img, int x0, int y0, int w, int h, const KeyLabel& label) {
-  Cell cell{img, x0, y0, w, h};
-  std::vector<bool> letters(size_t(w) * h);
+// White letters in a cell (bright, unsaturated, opaque pixels) and the box of
+// the rows and columns holding at least two of them. False if there are none.
+bool FindWhiteLetters(Cell& cell, std::vector<bool>& letters, float box[4]) {
+  const int w = cell.w, h = cell.h;
+  letters.assign(size_t(w) * h, false);
   int count = 0;
   for (int y = 0; y < h; ++y) {
     for (int x = 0; x < w; ++x) {
       const float* p = cell.at(x, y);
-      bool l = Lum(p) > 0.68f && Sat(p) < 0.12f && p[3] > 0.5f;
+      bool l = Luminance(p) > 0.68f && Saturation(p) < 0.12f && p[3] > 0.5f;
       letters[size_t(y) * w + x] = l;
       count += l;
     }
   }
-  if (count < 10) return;
-  float box[4] = {float(w), float(h), -1, -1};
+  if (count < 10) return false;
+  box[0] = float(w);
+  box[1] = float(h);
+  box[2] = box[3] = -1;
   for (int y = 0; y < h; ++y) {
     int row = 0;
     for (int x = 0; x < w; ++x) row += letters[size_t(y) * w + x];
@@ -765,7 +771,14 @@ void WhiteLabel(Image& img, int x0, int y0, int w, int h, const KeyLabel& label)
       box[2] = std::max(box[2], float(x + 1));
     }
   }
-  if (box[2] < 0 || box[3] < 0) return;
+  return box[2] >= 0 && box[3] >= 0;
+}
+
+void WhiteLabel(Image& img, int x0, int y0, int w, int h, const KeyLabel& label) {
+  Cell cell{img, x0, y0, w, h};
+  std::vector<bool> letters;
+  float box[4];
+  if (!FindWhiteLetters(cell, letters, box)) return;
   auto grown = Morph(letters, w, h, 3, true);
   for (int y = 0; y < h; ++y) {
     for (int x = 0; x < w; ++x) {
@@ -784,34 +797,10 @@ void WhiteLabel(Image& img, int x0, int y0, int w, int h, const KeyLabel& label)
 // left = movement keys (the tilt's key), right = the mouse when it looks.
 void StickKey(Image& img, int x0, int y0, int n, wchar_t side, const KeyBindings& k) {
   Cell cell{img, x0, y0, n, n};
-  std::vector<bool> letters(size_t(n) * n);
-  int count = 0;
-  for (int y = 0; y < n; ++y) {
-    for (int x = 0; x < n; ++x) {
-      const float* p = cell.at(x, y);
-      bool l = Lum(p) > 0.68f && Sat(p) < 0.12f && p[3] > 0.5f;
-      letters[size_t(y) * n + x] = l;
-      count += l;
-    }
-  }
-  if (count < 10) return;
-  float box[4] = {float(n), float(n), -1, -1}, puck[4] = {float(n), float(n), -1, -1};
-  for (int y = 0; y < n; ++y) {
-    int row = 0;
-    for (int x = 0; x < n; ++x) row += letters[size_t(y) * n + x];
-    if (row >= 2) {
-      box[1] = std::min(box[1], float(y));
-      box[3] = std::max(box[3], float(y + 1));
-    }
-  }
-  for (int x = 0; x < n; ++x) {
-    int col = 0;
-    for (int y = 0; y < n; ++y) col += letters[size_t(y) * n + x];
-    if (col >= 2) {
-      box[0] = std::min(box[0], float(x));
-      box[2] = std::max(box[2], float(x + 1));
-    }
-  }
+  std::vector<bool> letters;
+  float box[4];
+  if (!FindWhiteLetters(cell, letters, box)) return;
+  float puck[4] = {float(n), float(n), -1, -1};
   for (int y = 0; y < n; ++y) {
     for (int x = 0; x < n; ++x) {
       if (cell.at(x, y)[3] <= 0.5f) continue;
@@ -821,7 +810,6 @@ void StickKey(Image& img, int x0, int y0, int n, wchar_t side, const KeyBindings
       puck[3] = std::max(puck[3], float(y));
     }
   }
-  if (box[2] < 0) return;
   float dx = (box[0] + box[2]) / 2.0f - (puck[0] + puck[2] + 1) / 2.0f;
   float dy = (box[1] + box[3]) / 2.0f - (puck[1] + puck[3] + 1) / 2.0f;
   // The letters, their dark outline included.
@@ -830,7 +818,7 @@ void StickKey(Image& img, int x0, int y0, int n, wchar_t side, const KeyBindings
     for (int x = 0; x < n; ++x) {
       size_t i = size_t(y) * n + x;
       const float* p = cell.at(x, y);
-      grown[i] = (grown[i] || (around[i] && Lum(p) < 0.12f)) && p[3] > 0.5f;
+      grown[i] = (grown[i] || (around[i] && Luminance(p) < 0.12f)) && p[3] > 0.5f;
     }
   }
   Inpaint(cell, grown);
@@ -865,6 +853,9 @@ void StickKey(Image& img, int x0, int y0, int n, wchar_t side, const KeyBindings
   DrawLabel(cell, label, box, icon_box, kWhite);
 }
 
+// The curved banner around the Back / Start button: everything outside the
+// button's ellipse (cx, cy, rx, ry) is cleared and `text` arched over it in
+// the banner's colour.
 void Banner(Image& img, const int box[4], float cx, float cy, float rx, float ry,
             const wchar_t* text, float mid_angle) {
   Cell cell{img, box[0], box[1], box[2] - box[0], box[3] - box[1]};
@@ -877,7 +868,7 @@ void Banner(Image& img, const int box[4], float cx, float cy, float rx, float ry
       float ex = (x - cx) / (rx + 1.5f), ey = (y - cy) / (ry + 1.5f);
       bool in_banner = p[3] > 0.05f && ex * ex + ey * ey > 1.0f;
       banner[size_t(y) * cell.w + x] = in_banner;
-      if (in_banner && Lum(p) > 0.55f) {
+      if (in_banner && Luminance(p) > 0.55f) {
         for (int c = 0; c < 3; ++c) fill[c] += p[c];
         ++bright;
       }
@@ -1020,7 +1011,7 @@ bool IsButtonSheet(const Image& img) {
   return spheres && gap;
 }
 
-// ---- Glyphs in other HUD textures --------------------------------------------
+// Glyphs in other HUD textures
 
 // One change to a texture: a face button sphere, a shoulder plate or a white
 // text label.
@@ -1097,14 +1088,14 @@ bool FindSphere(const Image& img, const Component& c, Edit& edit) {
   } else {
     return false;
   }
-  float letter_lum = Lum(ring.data()) * 0.6f;
+  float letter_lum = Luminance(ring.data()) * 0.6f;
   int dark = 0, total = 0;
   for (int y = c.y0; y < std::min(c.y0 + n, img.h); ++y) {
     for (int x = c.x0; x < c.x1; ++x) {
       const float* p = img.at(x, y);
       if (std::hypot(x - cx, y - cy) > n * 0.25f || p[3] <= 0.5f) continue;
       ++total;
-      dark += Lum(p) < letter_lum;
+      dark += Luminance(p) < letter_lum;
     }
   }
   if (!total || dark * 10 < total) return false;
@@ -1129,7 +1120,7 @@ bool FindPlate(const Image& img, const Component& c, Edit& edit) {
     for (int x = 0; x < w; ++x) {
       if (!interior[size_t(y) * w + x]) continue;
       ++inside;
-      lum += Lum(img.at(c.x0 + x, c.y0 + y));
+      lum += Luminance(img.at(c.x0 + x, c.y0 + y));
     }
   }
   if (inside < w * h * 2 / 5 || lum / float(inside) < 0.5f) return false;
@@ -1137,7 +1128,7 @@ bool FindPlate(const Image& img, const Component& c, Edit& edit) {
   std::vector<bool> dark(size_t(w) * h);
   for (int y = 0; y < h; ++y) {
     auto is_dark = [&](int x) {
-      return interior[size_t(y) * w + x] && Lum(img.at(c.x0 + x, c.y0 + y)) < 0.5f;
+      return interior[size_t(y) * w + x] && Luminance(img.at(c.x0 + x, c.y0 + y)) < 0.5f;
     };
     for (int x = 0; x < w;) {
       if (!is_dark(x)) {
@@ -1342,7 +1333,7 @@ struct ButtonGlyphs::Impl {
     bool sheet = false;
     std::vector<Edit> edits;
     dl::RefCntAutoPtr<dl::ITexture> versions[3];  // PS4, PS5, keyboard
-    uint32_t keyboard_generation = 0;  // bindings the keyboard version shows
+    uint32_t keyboard_generation = 0;             // bindings the keyboard version shows
   };
   std::unordered_map<uint64_t, Entry> entries;
   std::unordered_map<uint64_t, bool> checked;
@@ -1367,8 +1358,8 @@ struct ButtonGlyphs::Impl {
             float acc[4] = {};
             for (int sy = 0; sy < 2; ++sy) {
               for (int sx = 0; sx < 2; ++sx) {
-                const float* p = level.at(std::min(x * 2 + sx, level.w - 1),
-                                          std::min(y * 2 + sy, level.h - 1));
+                const float* p =
+                    level.at(std::min(x * 2 + sx, level.w - 1), std::min(y * 2 + sy, level.h - 1));
                 for (int c = 0; c < 3; ++c) acc[c] += p[c] * p[3];
                 acc[3] += p[3];
               }
@@ -1383,7 +1374,8 @@ struct ButtonGlyphs::Impl {
     }
     int w = img.w;
     for (uint32_t l = 0; l < levels; ++l) {
-      subresources.push_back(dl::TextureSubResData{data[l].data(), uint64_t(std::max(w >> l, 1)) * 4});
+      subresources.push_back(
+          dl::TextureSubResData{data[l].data(), uint64_t(std::max(w >> l, 1)) * 4});
     }
     dl::TextureDesc desc;
     desc.Name = "ButtonGlyphs";

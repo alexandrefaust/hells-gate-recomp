@@ -64,11 +64,9 @@ struct VulkanDevice::Impl {
     uint32_t height = desc.Height;
     if (letterbox && std::isfinite(display_aspect) && display_aspect > 0.0) {
       if (display_aspect > double(width) / height) {
-        height = uint32_t(std::clamp(std::round(width / display_aspect),
-                                     1.0, double(height)));
+        height = uint32_t(std::clamp(std::round(width / display_aspect), 1.0, double(height)));
       } else {
-        width = uint32_t(std::clamp(std::round(height * display_aspect),
-                                    1.0, double(width)));
+        width = uint32_t(std::clamp(std::round(height * display_aspect), 1.0, double(width)));
       }
     }
     const uint32_t x = (desc.Width - width) / 2;
@@ -78,16 +76,15 @@ struct VulkanDevice::Impl {
     viewport.TopLeftY = float(y);
     viewport.Width = float(width);
     viewport.Height = float(height);
-    Diligent::Rect scissor{int32_t(x), int32_t(y),
-                           int32_t(x + width), int32_t(y + height)};
+    Diligent::Rect scissor{int32_t(x), int32_t(y), int32_t(x + width), int32_t(y + height)};
     context->SetViewports(1, &viewport, desc.Width, desc.Height);
     context->SetScissorRects(1, &scissor, desc.Width, desc.Height);
     if (logged_width != desc.Width || logged_height != desc.Height ||
         logged_aspect != display_aspect || logged_letterbox != letterbox) {
-      REXLOG_INFO("VulkanDevice: presentation window={}x{} target_aspect={:.6f} "
-                  "letterbox={} viewport=({},{}) {}x{}",
-                  desc.Width, desc.Height, display_aspect, letterbox,
-                  x, y, width, height);
+      REXLOG_INFO(
+          "VulkanDevice: presentation window={}x{} target_aspect={:.6f} "
+          "letterbox={} viewport=({},{}) {}x{}",
+          desc.Width, desc.Height, display_aspect, letterbox, x, y, width, height);
       logged_width = desc.Width;
       logged_height = desc.Height;
       logged_aspect = display_aspect;
@@ -98,24 +95,21 @@ struct VulkanDevice::Impl {
 
 VulkanDevice::VulkanDevice() : impl_(std::make_unique<Impl>()) {}
 
-VulkanDevice::~VulkanDevice() {
-  Shutdown();
-}
+VulkanDevice::~VulkanDevice() { Shutdown(); }
 
 bool VulkanDevice::Initialize(void* hwnd, uint32_t width, uint32_t height) {
   Shutdown();
 
-  Diligent::SetDebugMessageCallback(
-      [](Diligent::DEBUG_MESSAGE_SEVERITY severity, const char* message,
-         const char*, const char*, int) {
-        if (severity >= Diligent::DEBUG_MESSAGE_SEVERITY_ERROR) {
-          REXLOG_ERROR("Diligent: {}", message ? message : "");
-        } else if (severity == Diligent::DEBUG_MESSAGE_SEVERITY_WARNING) {
-          REXLOG_WARN("Diligent: {}", message ? message : "");
-        } else {
-          REXLOG_INFO("Diligent: {}", message ? message : "");
-        }
-      });
+  Diligent::SetDebugMessageCallback([](Diligent::DEBUG_MESSAGE_SEVERITY severity,
+                                       const char* message, const char*, const char*, int) {
+    if (severity >= Diligent::DEBUG_MESSAGE_SEVERITY_ERROR) {
+      REXLOG_ERROR("Diligent: {}", message ? message : "");
+    } else if (severity == Diligent::DEBUG_MESSAGE_SEVERITY_WARNING) {
+      REXLOG_WARN("Diligent: {}", message ? message : "");
+    } else {
+      REXLOG_INFO("Diligent: {}", message ? message : "");
+    }
+  });
 
   impl_->factory = Diligent::GetEngineFactoryVk();
   if (!impl_->factory) {
@@ -136,18 +130,16 @@ bool VulkanDevice::Initialize(void* hwnd, uint32_t width, uint32_t height) {
   impl_->hwnd = hwnd;
 #if defined(_WIN32)
   RECT client;
-  if (GetClientRect(static_cast<HWND>(hwnd), &client) &&
-      client.right > 0 && client.bottom > 0) {
+  if (GetClientRect(static_cast<HWND>(hwnd), &client) && client.right > 0 && client.bottom > 0) {
     width = uint32_t(client.right);
     height = uint32_t(client.bottom);
   }
-  REXLOG_INFO("VulkanDevice: hwnd={} client={}x{} swapchain {}x{} visible={}",
-              fmt::ptr(hwnd), client.right, client.bottom, width, height,
+  REXLOG_INFO("VulkanDevice: hwnd={} client={}x{} swapchain {}x{} visible={}", fmt::ptr(hwnd),
+              client.right, client.bottom, width, height,
               hwnd ? IsWindowVisible(static_cast<HWND>(hwnd)) : false);
 #endif
 
-  impl_->factory->CreateDeviceAndContextsVk(engine_ci, &impl_->device,
-                                             &impl_->context);
+  impl_->factory->CreateDeviceAndContextsVk(engine_ci, &impl_->device, &impl_->context);
   if (!impl_->device || !impl_->context) {
     REXLOG_ERROR("VulkanDevice: Failed to create Vulkan device/context");
     Shutdown();
@@ -165,8 +157,8 @@ bool VulkanDevice::Initialize(void* hwnd, uint32_t width, uint32_t height) {
 
   Diligent::NativeWindow native_window(hwnd);
 
-  impl_->factory->CreateSwapChainVk(impl_->device, impl_->context, sc_desc,
-                                    native_window, &impl_->swapchain);
+  impl_->factory->CreateSwapChainVk(impl_->device, impl_->context, sc_desc, native_window,
+                                    &impl_->swapchain);
   if (!impl_->swapchain) {
     REXLOG_ERROR("VulkanDevice: Failed to create Vulkan swapchain");
     Shutdown();
@@ -179,9 +171,9 @@ bool VulkanDevice::Initialize(void* hwnd, uint32_t width, uint32_t height) {
   }
 
   impl_->initialized = true;
-  REXLOG_INFO("VulkanDevice: Vulkan device initialized ({}x{}, encoded RGB passthrough, format={})",
-              width, height, Diligent::GetTextureFormatAttribs(
-                  impl_->swapchain->GetDesc().ColorBufferFormat).Name);
+  REXLOG_INFO(
+      "VulkanDevice: initialized, swap chain {}x{} {}", width, height,
+      Diligent::GetTextureFormatAttribs(impl_->swapchain->GetDesc().ColorBufferFormat).Name);
   return true;
 }
 
@@ -239,10 +231,8 @@ void main() {
 )";
 
 static bool CompileGlslToSpirv(const char* source, EShLanguage stage,
-                             std::vector<uint32_t>& out_spirv) {
-  static const bool glslang_ready = [] {
-    return glslang::InitializeProcess();
-  }();
+                               std::vector<uint32_t>& out_spirv) {
+  static const bool glslang_ready = [] { return glslang::InitializeProcess(); }();
   if (!glslang_ready) {
     REXLOG_ERROR("VulkanDevice: glslang InitializeProcess failed");
     return false;
@@ -253,8 +243,7 @@ static bool CompileGlslToSpirv(const char* source, EShLanguage stage,
   shader.setStrings(strings, 1);
   shader.setEntryPoint("main");
   shader.setSourceEntryPoint("main");
-  shader.setEnvInput(glslang::EShSourceGlsl, stage, glslang::EShClientVulkan,
-                     450);
+  shader.setEnvInput(glslang::EShSourceGlsl, stage, glslang::EShClientVulkan, 450);
   shader.setEnvClient(glslang::EShClientVulkan, glslang::EShTargetVulkan_1_0);
   shader.setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_0);
 
@@ -275,16 +264,11 @@ static bool CompileGlslToSpirv(const char* source, EShLanguage stage,
   return !out_spirv.empty();
 }
 
-static Diligent::IShader* CreateShader(Diligent::IRenderDevice* device,
-                                           const char* source,
-                                           Diligent::SHADER_TYPE type,
-                                           const char* name) {
+static Diligent::IShader* CreateShader(Diligent::IRenderDevice* device, const char* source,
+                                       Diligent::SHADER_TYPE type, const char* name) {
   std::vector<uint32_t> spirv;
   if (!CompileGlslToSpirv(
-          source,
-          type == Diligent::SHADER_TYPE_VERTEX ? EShLangVertex
-                                               : EShLangFragment,
-          spirv)) {
+          source, type == Diligent::SHADER_TYPE_VERTEX ? EShLangVertex : EShLangFragment, spirv)) {
     return nullptr;
   }
   Diligent::ShaderCreateInfo ci;
@@ -300,15 +284,15 @@ static Diligent::IShader* CreateShader(Diligent::IRenderDevice* device,
 
 bool VulkanDevice::CreateBlitPipeline() {
   if (!impl_->blit_pipeline) {
-    Diligent::IShader* vs = CreateShader(
-        impl_->device, kBlitVS, Diligent::SHADER_TYPE_VERTEX, "BlitVS");
+    Diligent::IShader* vs =
+        CreateShader(impl_->device, kBlitVS, Diligent::SHADER_TYPE_VERTEX, "BlitVS");
     if (!vs) {
       REXLOG_ERROR("VulkanDevice: Failed to compile blit VS");
       return false;
     }
 
-    Diligent::IShader* ps = CreateShader(
-        impl_->device, kBlitPS, Diligent::SHADER_TYPE_PIXEL, "BlitPS");
+    Diligent::IShader* ps =
+        CreateShader(impl_->device, kBlitPS, Diligent::SHADER_TYPE_PIXEL, "BlitPS");
     if (!ps) {
       REXLOG_ERROR("VulkanDevice: Failed to compile blit PS");
       vs->Release();
@@ -334,8 +318,7 @@ bool VulkanDevice::CreateBlitPipeline() {
     pso_ci.GraphicsPipeline.NumRenderTargets = 1;
     pso_ci.GraphicsPipeline.RTVFormats[0] = sc_desc.ColorBufferFormat;
     pso_ci.GraphicsPipeline.DSVFormat = sc_desc.DepthBufferFormat;
-    pso_ci.GraphicsPipeline.PrimitiveTopology =
-        Diligent::PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    pso_ci.GraphicsPipeline.PrimitiveTopology = Diligent::PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     pso_ci.GraphicsPipeline.InputLayout.NumElements = 0;
     pso_ci.GraphicsPipeline.RasterizerDesc.CullMode = Diligent::CULL_MODE_NONE;
     pso_ci.GraphicsPipeline.RasterizerDesc.ScissorEnable = Diligent::True;
@@ -346,8 +329,7 @@ bool VulkanDevice::CreateBlitPipeline() {
     pso_ci.PSODesc.ResourceLayout.DefaultVariableType =
         Diligent::SHADER_RESOURCE_VARIABLE_TYPE_STATIC;
     Diligent::ShaderResourceVariableDesc vars[] = {
-        {Diligent::SHADER_TYPE_PIXEL, "g_Texture",
-         Diligent::SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE},
+        {Diligent::SHADER_TYPE_PIXEL, "g_Texture", Diligent::SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE},
     };
     pso_ci.PSODesc.ResourceLayout.NumVariables = 1;
     pso_ci.PSODesc.ResourceLayout.Variables = vars;
@@ -361,8 +343,8 @@ bool VulkanDevice::CreateBlitPipeline() {
       return false;
     }
 
-    auto* samp_var = impl_->blit_pipeline->GetStaticVariableByName(
-        Diligent::SHADER_TYPE_PIXEL, "g_Sampler");
+    auto* samp_var =
+        impl_->blit_pipeline->GetStaticVariableByName(Diligent::SHADER_TYPE_PIXEL, "g_Sampler");
     if (samp_var && impl_->blit_sampler)
       samp_var->Set(impl_->blit_sampler);
     else {
@@ -371,7 +353,6 @@ bool VulkanDevice::CreateBlitPipeline() {
     }
 
     REXLOG_INFO("VulkanDevice: blit pipeline created (GLSL->SPIRV, cull=none)");
-
   }
   return true;
 }
@@ -402,16 +383,10 @@ bool VulkanDevice::PresentTexture(Diligent::ITextureView* srv, uint32_t sync_int
   return true;
 }
 
-Diligent::IShader* VulkanDevice::CreateGlslShader(const char* source, bool pixel,
-                                                  const char* name) {
-  return CreateShader(impl_->device, source,
-                      pixel ? Diligent::SHADER_TYPE_PIXEL : Diligent::SHADER_TYPE_VERTEX, name);
-}
-
 Diligent::IPipelineState* VulkanDevice::CreateFullscreenPipeline(const char* name,
-                                                               const char* pixel_source,
-                                                               Diligent::TEXTURE_FORMAT format,
-                                                               bool scissor) {
+                                                                 const char* pixel_source,
+                                                                 Diligent::TEXTURE_FORMAT format,
+                                                                 bool scissor) {
   static constexpr char kFullscreenVS[] = R"(#version 450
 void main() {
   uint id = uint(gl_VertexIndex);
@@ -452,8 +427,8 @@ bool VulkanDevice::UpdateWindowSize() {
 #if defined(_WIN32)
   const auto hwnd = static_cast<HWND>(impl_->hwnd);
   RECT client;
-  if (IsIconic(hwnd) || !GetClientRect(hwnd, &client) ||
-      client.right <= 0 || client.bottom <= 0) return false;
+  if (IsIconic(hwnd) || !GetClientRect(hwnd, &client) || client.right <= 0 || client.bottom <= 0)
+    return false;
   const auto& desc = impl_->swapchain->GetDesc();
   if (desc.Width != uint32_t(client.right) || desc.Height != uint32_t(client.bottom)) {
     Resize(uint32_t(client.right), uint32_t(client.bottom));
@@ -466,8 +441,7 @@ bool VulkanDevice::UpdateWindowSize() {
 void VulkanDevice::Resize(uint32_t width, uint32_t height) {
   if (!impl_->initialized) return;
   if (width == 0 || height == 0) return;
-  impl_->swapchain->Resize(width, height,
-                           Diligent::SURFACE_TRANSFORM_OPTIMAL);
+  impl_->swapchain->Resize(width, height, Diligent::SURFACE_TRANSFORM_OPTIMAL);
 }
 
 void VulkanDevice::Shutdown() {
@@ -476,12 +450,27 @@ void VulkanDevice::Shutdown() {
     impl_->context->WaitForIdle();
     impl_->context->FinishFrame();
   }
-  if (impl_->blit_sampler) { impl_->blit_sampler->Release(); impl_->blit_sampler = nullptr; }
-  if (impl_->blit_pipeline) { impl_->blit_pipeline->Release(); impl_->blit_pipeline = nullptr; }
+  if (impl_->blit_sampler) {
+    impl_->blit_sampler->Release();
+    impl_->blit_sampler = nullptr;
+  }
+  if (impl_->blit_pipeline) {
+    impl_->blit_pipeline->Release();
+    impl_->blit_pipeline = nullptr;
+  }
 
-  if (impl_->swapchain) { impl_->swapchain->Release(); impl_->swapchain = nullptr; }
-  if (impl_->context) { impl_->context->Release(); impl_->context = nullptr; }
-  if (impl_->device) { impl_->device->Release(); impl_->device = nullptr; }
+  if (impl_->swapchain) {
+    impl_->swapchain->Release();
+    impl_->swapchain = nullptr;
+  }
+  if (impl_->context) {
+    impl_->context->Release();
+    impl_->context = nullptr;
+  }
+  if (impl_->device) {
+    impl_->device->Release();
+    impl_->device = nullptr;
+  }
 
   impl_->initialized = false;
 }
