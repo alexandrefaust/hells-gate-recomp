@@ -240,7 +240,7 @@ pass: depth at tile 0 (720 tiles), colour at tile 720.
 ## Effective GPU state at a draw (verified by M2)
 
 The register file the GPU sees at a draw is **not** just the device shadow.
-M2 (`src/native_renderer/native_observer.cpp`) reproduces it exactly, for every
+The state verifier (`src/renderer/state_verifier.cpp`) reproduces it exactly, for every
 register the bound shaders read, with these rules (log 323: menu 66/66,
 gameplay 948/948, pause 690/690 draws identical to the Xenos register file):
 

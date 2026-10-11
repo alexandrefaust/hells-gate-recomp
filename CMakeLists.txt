@@ -248,3 +248,18 @@ if(DANTESINFERNO_NATIVE_RENDERER)
     target_compile_definitions(dantes_inferno_native PRIVATE DANTESINFERNO_NATIVE_RENDERER)
 
 endif()
+
+# Qt launcher for the native Linux build (packaging/appimage).
+option(DANTESINFERNO_BUILD_LAUNCHER "Build the Qt launcher (Linux)" ON)
+option(DANTESINFERNO_LAUNCHER_BUILD_TESTS "Build the Qt launcher tests" ON)
+if(DANTESINFERNO_BUILD_LAUNCHER AND UNIX AND NOT APPLE)
+    find_package(Qt6 6.4 COMPONENTS Core Gui Widgets QUIET)
+    if(Qt6_FOUND)
+        if(DANTESINFERNO_LAUNCHER_BUILD_TESTS)
+            enable_testing()
+        endif()
+        add_subdirectory(launcher-linux)
+    else()
+        message(WARNING "Qt 6.4+ not found; dantes_inferno_launcher will not be built")
+    endif()
+endif()
