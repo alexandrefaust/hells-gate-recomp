@@ -20,7 +20,7 @@ class RegisterFile;
 class SpirvShader;
 }  // namespace rex::graphics
 
-namespace native {
+namespace renderer {
 
 class TextureCache;
 
@@ -71,4 +71,4 @@ class DrawRenderer {
   std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace native
+}  // namespace renderer

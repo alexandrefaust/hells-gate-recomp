@@ -3,10 +3,10 @@
 // matched by its packet address and compared on the registers its shaders
 // read. D3D-internal draws (clears, resolves) have no entry.
 
-#include "native_observer.h"
+#include "state_verifier.h"
 
-#include "dante_device.h"
-#include "gpu_state.h"
+#include "renderer.h"
+#include "guest_gpu_state.h"
 
 #include <rex/cvar.h>
 #include <rex/logging/macros.h>
@@ -37,16 +37,16 @@
 #include <windows.h>
 #endif
 
-REXCVAR_DEFINE_INT32(native_observe_frames, 0, "Diagnostics",
+REXCVAR_DEFINE_INT32(verify_gpu_state_frames, 0, "Diagnostics",
                      "M2 shadow observer: decode the guest D3D register shadow at "
                      "each draw for the next N frames and cross-check it against "
                      "the Xenos register file")
     .range(0, 100);
 
-namespace native {
+namespace renderer {
 namespace {
 
-using namespace native::gpu;
+using namespace guest;
 
 // Written straight to the command buffer, not shadowed.
 constexpr uint32_t kUnshadowedRegs[] = {
@@ -60,19 +60,19 @@ constexpr uint32_t kMaxUnmatchedLogged = 8;
 constexpr uint32_t kMaxMissedLogged = 8;
 constexpr size_t kMatchWindow = 64;
 
-struct Entry {
+struct ObservedDraw {
   uint32_t seq = 0;
   DrawKind kind = DrawKind::kIndexed;
   uint32_t prim = 0;
   uint32_t count = 0;
   uint32_t device = 0;
-  uint32_t ring_before = 0;  // guest physical
-  uint32_t ring_end = 0;     // guest physical, just past the last dword written
+  uint32_t write_ptr_before = 0;  // guest physical
+  uint32_t write_ptr_end = 0;     // guest physical, just past the last dword written
   uint32_t inline_data = 0;  // BeginVertices return value (inline draws)
   uint32_t literal_dwords = 0;
   uint32_t buffer_constant_dwords = 0;
   std::atomic<bool> ready{false};
-  State shadow{};
+  GuestRegisters shadow{};
   uint64_t vs_hash = 0, ps_hash = 0;  // renderer=dante's shaders
   uint32_t vs_object = 0, decl = 0;
   uint32_t index_base = 0, index_count = 0, index_format = 0;
@@ -114,10 +114,10 @@ bool g_observer_installed = false;
 std::atomic<bool> g_observing{false};  // render thread records draws
 std::atomic<bool> g_cp_active{false};  // GPU thread matches draws
 uint32_t g_next_seq = 0;
-Entry* g_pending = nullptr;
+ObservedDraw* g_pending = nullptr;
 
 std::mutex g_queue_mutex;
-std::deque<std::unique_ptr<Entry>> g_queue;
+std::deque<std::unique_ptr<ObservedDraw>> g_queue;
 
 std::mutex g_stats_mutex;
 std::map<uint32_t, RegStats> g_reg_stats;
@@ -137,7 +137,7 @@ uint32_t g_memexport_draws = 0;
 
 bool g_internal_since_match = false;  // GPU thread
 
-void LogDecodedDraw(const Entry& e, const uint8_t* base) {
+void LogDecodedDraw(const ObservedDraw& e, const uint8_t* base) {
   const uint32_t dev = e.device;
   auto shadow_reg = [&e](uint32_t reg) -> uint32_t {
     uint32_t index = 0;
@@ -167,9 +167,9 @@ void LogDecodedDraw(const Entry& e, const uint8_t* base) {
   uint32_t vs = Load32(base, dev + kDevVertexShader);
   uint32_t ps = Load32(base, dev + kDevPixelShader);
   line += fmt::format(" VS={:08X} PS={:08X}", vs, ps);
-  if (Plausible(ps)) {
+  if (IsPlausibleAddress(ps)) {
     uint32_t block = ps + Load32(base, ps + 0x40);
-    if (Plausible(block)) {
+    if (IsPlausibleAddress(block)) {
       line += fmt::format("(ucode={:08X}+{})", Load32(base, ps + 0x18) + Load32(base, block + 40),
                           Load32(base, block + 44));
     }
@@ -264,11 +264,11 @@ bool ShouldCompare(uint32_t reg, const RexGpuDrawUsage* usage) {
 
 size_t FindEntry(uint32_t packet_end) {
   for (size_t i = 0; i < g_queue.size() && i < kMatchWindow; ++i) {
-    const Entry& e = *g_queue[i];
+    const ObservedDraw& e = *g_queue[i];
     if (!e.ready.load(std::memory_order_acquire)) break;
-    bool in_range = e.ring_before < packet_end && packet_end <= e.ring_end &&
-                    e.ring_end - e.ring_before < 0x100000u;
-    if (packet_end == e.ring_end || in_range) return i;
+    bool in_range = e.write_ptr_before < packet_end && packet_end <= e.write_ptr_end &&
+                    e.write_ptr_end - e.write_ptr_before < 0x100000u;
+    if (packet_end == e.write_ptr_end || in_range) return i;
   }
   return SIZE_MAX;
 }
@@ -306,16 +306,16 @@ void OnCpDraw(void*, const uint32_t* regs, uint32_t reg_count, uint32_t draw_ini
     }
     return;
   }
-  std::unique_ptr<Entry> entry = std::move(g_queue[found]);
+  std::unique_ptr<ObservedDraw> entry = std::move(g_queue[found]);
   std::lock_guard stats_lock(g_stats_mutex);
   for (size_t i = 0; i < found; ++i) {
-    const Entry& missed = *g_queue[i];
+    const ObservedDraw& missed = *g_queue[i];
     if (++g_missed_entries <= kMaxMissedLogged) {
       REXLOG_INFO(
           "NATIVE-OBS missed draw #{} kind={} prim={} count={} ring={:08X}..{:08X} "
           "(next xenos draw packet_end={:08X} matched #{})",
-          missed.seq, int(missed.kind), missed.prim, missed.count, missed.ring_before,
-          missed.ring_end, packet_end, entry->seq);
+          missed.seq, int(missed.kind), missed.prim, missed.count, missed.write_ptr_before,
+          missed.write_ptr_end, packet_end, entry->seq);
     }
   }
   g_queue.erase(g_queue.begin(), g_queue.begin() + found + 1);
@@ -410,16 +410,16 @@ bool InstallCpObserver() {
   return g_observer_installed;
 }
 
-void Finalize(Entry* e, const uint8_t* base) {
+void Finalize(ObservedDraw* e, const uint8_t* base) {
   g_pending = nullptr;
   // dev+48 points at the last dword written.
-  e->ring_end = GpuAddress(Load32(base, e->device + kDevRingWritePtr)) + 4;
-  CaptureStats stats = Capture(e->device, base, e->shadow);
+  e->write_ptr_end = GpuAddress(Load32(base, e->device + kDevCommandBufferWritePtr)) + 4;
+  DrawStateStats stats = CaptureDrawState(e->device, base, e->shadow);
   e->literal_dwords = stats.literal_dwords;
-  DanteShaderHashes(e->device, base, e->vs_hash, e->ps_hash);
+  BoundShaderHashes(e->device, base, e->vs_hash, e->ps_hash);
   e->vs_object = Load32(base, e->device + kDevVertexShader);
   e->decl = Load32(base, e->device + kDevVertexDecl);
-  DanteLastIndexBuffer(e->index_base, e->index_count, e->index_format);
+  LastIndexBuffer(e->index_base, e->index_count, e->index_format);
   e->buffer_constant_dwords = stats.buffer_constant_dwords;
   if (e->seq <= kMaxDecodedDrawsLogged) LogDecodedDraw(*e, base);
   e->ready.store(true, std::memory_order_release);
@@ -430,7 +430,7 @@ void Finalize(Entry* e, const uint8_t* base) {
 uint32_t ObserveDrawBegin(DrawKind kind, const PPCContext& ctx, const uint8_t* base) {
   if (!g_observing.load(std::memory_order_relaxed)) return 0;
   if (g_pending) return 0;
-  auto entry = std::make_unique<Entry>();
+  auto entry = std::make_unique<ObservedDraw>();
   entry->seq = ++g_next_seq;
   entry->kind = kind;
   entry->prim = ctx.r4.u32;
@@ -438,7 +438,7 @@ uint32_t ObserveDrawBegin(DrawKind kind, const PPCContext& ctx, const uint8_t* b
                  : kind == DrawKind::kAuto  ? ctx.r6.u32
                                             : ctx.r5.u32;
   entry->device = ctx.r3.u32;
-  entry->ring_before = GpuAddress(Load32(base, entry->device + kDevRingWritePtr));
+  entry->write_ptr_before = GpuAddress(Load32(base, entry->device + kDevCommandBufferWritePtr));
   g_pending = entry.get();
   {
     std::lock_guard lock(g_queue_mutex);
@@ -448,28 +448,28 @@ uint32_t ObserveDrawBegin(DrawKind kind, const PPCContext& ctx, const uint8_t* b
 }
 
 void ObserveDrawEnd(uint32_t ticket, const PPCContext& ctx, const uint8_t* base) {
-  Entry* e = g_pending;
+  ObservedDraw* e = g_pending;
   if (!ticket || !e || e->seq != ticket) return;
   if (e->kind == DrawKind::kInline) return;
   Finalize(e, base);
 }
 
 void ObserveBeginVerticesReturned(const PPCContext& ctx) {
-  Entry* e = g_pending;
+  ObservedDraw* e = g_pending;
   if (e && (e->kind == DrawKind::kInline || e->kind == DrawKind::kInlineUP)) {
     e->inline_data = ctx.r3.u32;
   }
 }
 
 void ObserveEndVertices(const uint8_t* base) {
-  Entry* e = g_pending;
+  ObservedDraw* e = g_pending;
   if (e && e->kind == DrawKind::kInline) Finalize(e, base);
 }
 
 void ObserveFrameBoundary() {
   switch (g_state) {
     case CaptureState::kIdle: {
-      int32_t frames = REXCVAR_GET(native_observe_frames);
+      int32_t frames = REXCVAR_GET(verify_gpu_state_frames);
       if (frames <= 0) return;
       ResetStats();
       g_next_seq = 0;
@@ -482,7 +482,7 @@ void ObserveFrameBoundary() {
       g_state = CaptureState::kCapturing;
     } break;
     case CaptureState::kCapturing: {
-      REXCVAR_SET(native_observe_frames, int32_t(--g_frames_left));
+      REXCVAR_SET(verify_gpu_state_frames, int32_t(--g_frames_left));
       if (g_frames_left == 0) {
         g_observing.store(false, std::memory_order_relaxed);
         g_drain_frames = 0;
@@ -506,10 +506,10 @@ void ObserveFrameBoundary() {
         g_queue.clear();
       }
       Report();
-      REXCVAR_SET(native_observe_frames, 0);
+      REXCVAR_SET(verify_gpu_state_frames, 0);
       g_state = CaptureState::kIdle;
     } break;
   }
 }
 
-}  // namespace native
+}  // namespace renderer

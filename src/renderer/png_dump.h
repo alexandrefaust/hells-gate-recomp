@@ -12,11 +12,11 @@ struct IDeviceContext;
 struct ITexture;
 }  // namespace Diligent
 
-namespace native {
+namespace renderer {
 
 std::filesystem::path FrameDumpDirectory();
 
 bool DumpTexturePng(Diligent::IRenderDevice* device, Diligent::IDeviceContext* context,
                     Diligent::ITexture* texture, const std::filesystem::path& path);
 
-}  // namespace native
+}  // namespace renderer

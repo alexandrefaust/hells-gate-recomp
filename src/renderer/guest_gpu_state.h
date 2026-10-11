@@ -1,33 +1,20 @@
-// Effective Xenos GPU state at a D3D draw, rebuilt from the guest D3D device
-// (verified against the Xenos register file by the M2 observer). Rules:
+// Xenos GPU state at a D3D draw, rebuilt from the game's D3D device: its
+// register shadow plus the constants D3D loads around it. Matches the Xenos
+// register file (checked with the F9 state verifier); details in
 // docs/NATIVE_D3D_MAP.md, "Effective GPU state at a draw". Render thread only.
 
 #pragma once
+
+#include "guest_memory.h"
 
 #include <array>
 #include <cstdint>
 
 struct PPCContext;
 
-namespace native::gpu {
+namespace renderer {
 
-inline const uint8_t* GuestPtr(const uint8_t* base, uint32_t addr) {
-  return base + addr + (addr >= 0xE0000000u ? 0x1000u : 0u);
-}
-inline uint32_t Load32(const uint8_t* base, uint32_t addr) {
-  return __builtin_bswap32(*reinterpret_cast<const uint32_t*>(GuestPtr(base, addr)));
-}
-inline uint32_t Load16(const uint8_t* base, uint32_t addr) {
-  return __builtin_bswap16(*reinterpret_cast<const uint16_t*>(GuestPtr(base, addr)));
-}
-inline bool Plausible(uint32_t addr) { return addr >= 0x10000u && addr < 0xFFFF0000u; }
-
-// Guest virtual -> GPU physical, as the D3D layer computes it.
-inline uint32_t GpuAddress(uint32_t addr) {
-  return (addr & 0x1FFFFFFFu) + (((addr >> 20) + 0x200u) & 0x1000u);
-}
-
-// (first register, count, device offset)
+// Register ranges the D3D device shadows: first register, count, device offset.
 struct ShadowRange {
   uint32_t reg;
   uint32_t count;
@@ -47,14 +34,17 @@ inline constexpr ShadowRange kShadowRanges[] = {
     {0x4400, 1024, 6016},  // PS float constants
     {0x4900, 40, 10112},   // bool + loop constants
 };
-inline constexpr uint32_t kStateDwords = [] {
+inline constexpr uint32_t kGuestRegisterCount = [] {
   uint32_t total = 0;
   for (const auto& range : kShadowRanges) total += range.count;
   return total;
 }();
 
-// Index into a State for a register, or -1 if not part of the state.
-constexpr int StateIndex(uint32_t reg) {
+// The shadowed registers, in kShadowRanges order.
+using GuestRegisters = std::array<uint32_t, kGuestRegisterCount>;
+
+// Index of a register in GuestRegisters, or -1 if it isn't shadowed.
+constexpr int GuestRegisterIndex(uint32_t reg) {
   int index = 0;
   for (const auto& range : kShadowRanges) {
     if (reg >= range.reg && reg < range.reg + range.count) return index + int(reg - range.reg);
@@ -63,8 +53,8 @@ constexpr int StateIndex(uint32_t reg) {
   return -1;
 }
 
-// Device offsets of current objects.
-inline constexpr uint32_t kDevRingWritePtr = 48;  // last dword written
+// D3D device offsets of the bound objects.
+inline constexpr uint32_t kDevCommandBufferWritePtr = 48;  // last dword written
 inline constexpr uint32_t kDevVertexDecl = 11992;
 inline constexpr uint32_t kDevIndexBuffer = 12612;
 inline constexpr uint32_t kDevRenderTargets = 12616;  // RT0..3
@@ -73,10 +63,7 @@ inline constexpr uint32_t kDevStreams = 12636;  // 4 * stream
 inline constexpr uint32_t kDevPixelShader = 12868;
 inline constexpr uint32_t kDevVertexShader = 12872;
 
-// Registers in shadow order (kShadowRanges), see StateIndex.
-using State = std::array<uint32_t, kStateDwords>;
-
-struct CaptureStats {
+struct DrawStateStats {
   uint32_t literal_dwords = 0;
   uint32_t buffer_constant_dwords = 0;
 };
@@ -90,11 +77,6 @@ void TrackConstantBufferLoad(const PPCContext& ctx, const uint8_t* base);
 
 // The state the GPU sees for the draw just submitted: shadow, then
 // buffer-loaded float constants, then the bound shaders' literal constants.
-CaptureStats Capture(uint32_t device, const uint8_t* base, State& out);
+DrawStateStats CaptureDrawState(uint32_t device, const uint8_t* base, GuestRegisters& out);
 
-inline uint32_t Reg(const State& state, uint32_t reg) {
-  int index = StateIndex(reg);
-  return index < 0 ? 0 : state[index];
-}
-
-}  // namespace native::gpu
+}  // namespace renderer

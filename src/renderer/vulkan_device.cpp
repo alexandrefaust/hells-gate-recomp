@@ -1,4 +1,4 @@
-#include "native_device.h"
+#include "vulkan_device.h"
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -37,9 +37,9 @@ namespace glslang {
 extern const TBuiltInResource DefaultTBuiltInResource;
 }
 
-namespace dante {
+namespace renderer {
 
-struct NativeDevice::Impl {
+struct VulkanDevice::Impl {
   Diligent::IEngineFactoryVk* factory = nullptr;
   Diligent::IRenderDevice* device = nullptr;
   Diligent::IDeviceContext* context = nullptr;
@@ -57,7 +57,7 @@ struct NativeDevice::Impl {
   double logged_aspect = -1.0;
   bool logged_letterbox = false;
 
-  void setBlitViewport() {
+  void SetBlitViewport() {
     const auto& desc = swapchain->GetDesc();
     uint32_t width = desc.Width;
     uint32_t height = desc.Height;
@@ -83,7 +83,7 @@ struct NativeDevice::Impl {
     context->SetScissorRects(1, &scissor, desc.Width, desc.Height);
     if (logged_width != desc.Width || logged_height != desc.Height ||
         logged_aspect != display_aspect || logged_letterbox != letterbox) {
-      REXLOG_INFO("NativeDevice: presentation window={}x{} target_aspect={:.6f} "
+      REXLOG_INFO("VulkanDevice: presentation window={}x{} target_aspect={:.6f} "
                   "letterbox={} viewport=({},{}) {}x{}",
                   desc.Width, desc.Height, display_aspect, letterbox,
                   x, y, width, height);
@@ -95,15 +95,14 @@ struct NativeDevice::Impl {
   }
 };
 
-NativeDevice::NativeDevice() : impl_(new Impl()) {}
+VulkanDevice::VulkanDevice() : impl_(std::make_unique<Impl>()) {}
 
-NativeDevice::~NativeDevice() {
-  shutdown();
-  delete impl_;
+VulkanDevice::~VulkanDevice() {
+  Shutdown();
 }
 
-bool NativeDevice::initialize(void* hwnd, uint32_t width, uint32_t height) {
-  shutdown();
+bool VulkanDevice::Initialize(void* hwnd, uint32_t width, uint32_t height) {
+  Shutdown();
 
   Diligent::SetDebugMessageCallback(
       [](Diligent::DEBUG_MESSAGE_SEVERITY severity, const char* message,
@@ -119,7 +118,7 @@ bool NativeDevice::initialize(void* hwnd, uint32_t width, uint32_t height) {
 
   impl_->factory = Diligent::GetEngineFactoryVk();
   if (!impl_->factory) {
-    REXLOG_ERROR("NativeDevice: Failed to get Vulkan engine factory");
+    REXLOG_ERROR("VulkanDevice: Failed to get Vulkan engine factory");
     return false;
   }
 
@@ -141,7 +140,7 @@ bool NativeDevice::initialize(void* hwnd, uint32_t width, uint32_t height) {
     width = uint32_t(client.right);
     height = uint32_t(client.bottom);
   }
-  REXLOG_INFO("NativeDevice: hwnd={} client={}x{} swapchain {}x{} visible={}",
+  REXLOG_INFO("VulkanDevice: hwnd={} client={}x{} swapchain {}x{} visible={}",
               fmt::ptr(hwnd), client.right, client.bottom, width, height,
               hwnd ? IsWindowVisible(static_cast<HWND>(hwnd)) : false);
 #endif
@@ -149,8 +148,8 @@ bool NativeDevice::initialize(void* hwnd, uint32_t width, uint32_t height) {
   impl_->factory->CreateDeviceAndContextsVk(engine_ci, &impl_->device,
                                              &impl_->context);
   if (!impl_->device || !impl_->context) {
-    REXLOG_ERROR("NativeDevice: Failed to create Vulkan device/context");
-    shutdown();
+    REXLOG_ERROR("VulkanDevice: Failed to create Vulkan device/context");
+    Shutdown();
     return false;
   }
 
@@ -168,24 +167,24 @@ bool NativeDevice::initialize(void* hwnd, uint32_t width, uint32_t height) {
   impl_->factory->CreateSwapChainVk(impl_->device, impl_->context, sc_desc,
                                     native_window, &impl_->swapchain);
   if (!impl_->swapchain) {
-    REXLOG_ERROR("NativeDevice: Failed to create Vulkan swapchain");
-    shutdown();
+    REXLOG_ERROR("VulkanDevice: Failed to create Vulkan swapchain");
+    Shutdown();
     return false;
   }
 
-  if (!initializeBlitPipeline()) {
-    shutdown();
+  if (!CreateBlitPipeline()) {
+    Shutdown();
     return false;
   }
 
   impl_->initialized = true;
-  REXLOG_INFO("NativeDevice: Vulkan device initialized ({}x{}, encoded RGB passthrough, format={})",
+  REXLOG_INFO("VulkanDevice: Vulkan device initialized ({}x{}, encoded RGB passthrough, format={})",
               width, height, Diligent::GetTextureFormatAttribs(
                   impl_->swapchain->GetDesc().ColorBufferFormat).Name);
   return true;
 }
 
-void NativeDevice::beginFrame() {
+void VulkanDevice::BeginFrame() {
   if (!impl_->initialized) return;
 
   auto* rtv = impl_->swapchain->GetCurrentBackBufferRTV();
@@ -194,7 +193,7 @@ void NativeDevice::beginFrame() {
                                    Diligent::RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
 }
 
-void NativeDevice::clear(float r, float g, float b, float a) {
+void VulkanDevice::Clear(float r, float g, float b, float a) {
   if (!impl_->initialized) return;
 
   const float clear_color[] = {r, g, b, a};
@@ -209,7 +208,7 @@ void NativeDevice::clear(float r, float g, float b, float a) {
   }
 }
 
-void NativeDevice::present(uint32_t sync_interval) {
+void VulkanDevice::Present(uint32_t sync_interval) {
   if (!impl_->initialized) return;
   impl_->swapchain->Present(sync_interval);
 }
@@ -238,13 +237,13 @@ void main() {
 }
 )";
 
-static bool compileGlslToSpv(const char* source, EShLanguage stage,
+static bool CompileGlslToSpirv(const char* source, EShLanguage stage,
                              std::vector<uint32_t>& out_spirv) {
   static const bool glslang_ready = [] {
     return glslang::InitializeProcess();
   }();
   if (!glslang_ready) {
-    REXLOG_ERROR("NativeDevice: glslang InitializeProcess failed");
+    REXLOG_ERROR("VulkanDevice: glslang InitializeProcess failed");
     return false;
   }
 
@@ -260,14 +259,14 @@ static bool compileGlslToSpv(const char* source, EShLanguage stage,
 
   const auto messages = EShMessages(EShMsgSpvRules | EShMsgVulkanRules);
   if (!shader.parse(&glslang::DefaultTBuiltInResource, 450, false, messages)) {
-    REXLOG_ERROR("NativeDevice: glslang parse failed: {}",
+    REXLOG_ERROR("VulkanDevice: glslang parse failed: {}",
                  shader.getInfoLog() ? shader.getInfoLog() : "");
     return false;
   }
   glslang::TProgram program;
   program.addShader(&shader);
   if (!program.link(messages)) {
-    REXLOG_ERROR("NativeDevice: glslang link failed: {}",
+    REXLOG_ERROR("VulkanDevice: glslang link failed: {}",
                  program.getInfoLog() ? program.getInfoLog() : "");
     return false;
   }
@@ -275,12 +274,12 @@ static bool compileGlslToSpv(const char* source, EShLanguage stage,
   return !out_spirv.empty();
 }
 
-static Diligent::IShader* createShader(Diligent::IRenderDevice* device,
+static Diligent::IShader* CreateShader(Diligent::IRenderDevice* device,
                                            const char* source,
                                            Diligent::SHADER_TYPE type,
                                            const char* name) {
   std::vector<uint32_t> spirv;
-  if (!compileGlslToSpv(
+  if (!CompileGlslToSpirv(
           source,
           type == Diligent::SHADER_TYPE_VERTEX ? EShLangVertex
                                                : EShLangFragment,
@@ -298,19 +297,19 @@ static Diligent::IShader* createShader(Diligent::IRenderDevice* device,
   return shader;
 }
 
-bool NativeDevice::initializeBlitPipeline() {
+bool VulkanDevice::CreateBlitPipeline() {
   if (!impl_->blit_pipeline) {
-    Diligent::IShader* vs = createShader(
+    Diligent::IShader* vs = CreateShader(
         impl_->device, kBlitVS, Diligent::SHADER_TYPE_VERTEX, "BlitVS");
     if (!vs) {
-      REXLOG_ERROR("NativeDevice: Failed to compile blit VS");
+      REXLOG_ERROR("VulkanDevice: Failed to compile blit VS");
       return false;
     }
 
-    Diligent::IShader* ps = createShader(
+    Diligent::IShader* ps = CreateShader(
         impl_->device, kBlitPS, Diligent::SHADER_TYPE_PIXEL, "BlitPS");
     if (!ps) {
-      REXLOG_ERROR("NativeDevice: Failed to compile blit PS");
+      REXLOG_ERROR("VulkanDevice: Failed to compile blit PS");
       vs->Release();
       return false;
     }
@@ -357,7 +356,7 @@ bool NativeDevice::initializeBlitPipeline() {
     ps->Release();
 
     if (!impl_->blit_pipeline) {
-      REXLOG_ERROR("NativeDevice: Failed to create blit pipeline");
+      REXLOG_ERROR("VulkanDevice: Failed to create blit pipeline");
       return false;
     }
 
@@ -366,17 +365,17 @@ bool NativeDevice::initializeBlitPipeline() {
     if (samp_var && impl_->blit_sampler)
       samp_var->Set(impl_->blit_sampler);
     else {
-      REXLOG_ERROR("NativeDevice: blit sampler static var not found or null sampler");
+      REXLOG_ERROR("VulkanDevice: blit sampler static var not found or null sampler");
       return false;
     }
 
-    REXLOG_INFO("NativeDevice: blit pipeline created (GLSL->SPIRV, cull=none)");
+    REXLOG_INFO("VulkanDevice: blit pipeline created (GLSL->SPIRV, cull=none)");
 
   }
   return true;
 }
 
-bool NativeDevice::presentTexture(Diligent::ITextureView* srv, uint32_t sync_interval) {
+bool VulkanDevice::PresentTexture(Diligent::ITextureView* srv, uint32_t sync_interval) {
   if (!impl_->initialized || !srv) return false;
   Diligent::IShaderResourceBinding* srb = nullptr;
   impl_->blit_pipeline->CreateShaderResourceBinding(&srb, true);
@@ -391,7 +390,7 @@ bool NativeDevice::presentTexture(Diligent::ITextureView* srv, uint32_t sync_int
   const float clear_color[] = {0.0f, 0.0f, 0.0f, 1.0f};
   impl_->context->ClearRenderTarget(rtv, clear_color,
                                     Diligent::RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-  impl_->setBlitViewport();
+  impl_->SetBlitViewport();
   impl_->context->SetPipelineState(impl_->blit_pipeline);
   impl_->context->CommitShaderResources(srb, Diligent::RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
   Diligent::DrawAttribs da;
@@ -402,22 +401,22 @@ bool NativeDevice::presentTexture(Diligent::ITextureView* srv, uint32_t sync_int
   return true;
 }
 
-Diligent::IShader* NativeDevice::createGlslShader(const char* source, bool pixel,
+Diligent::IShader* VulkanDevice::CreateGlslShader(const char* source, bool pixel,
                                                   const char* name) {
-  return createShader(impl_->device, source,
+  return CreateShader(impl_->device, source,
                       pixel ? Diligent::SHADER_TYPE_PIXEL : Diligent::SHADER_TYPE_VERTEX, name);
 }
 
-Diligent::IRenderDevice* NativeDevice::renderDevice() const { return impl_->device; }
-Diligent::IDeviceContext* NativeDevice::immediateContext() const { return impl_->context; }
+Diligent::IRenderDevice* VulkanDevice::RenderDevice() const { return impl_->device; }
+Diligent::IDeviceContext* VulkanDevice::Context() const { return impl_->context; }
 
-void NativeDevice::setDisplayAspect(double aspect, bool letterbox) {
+void VulkanDevice::SetDisplayAspect(double aspect, bool letterbox) {
   if (!impl_->initialized) return;
   impl_->display_aspect = aspect;
   impl_->letterbox = letterbox;
 }
 
-bool NativeDevice::updateWindowSize() {
+bool VulkanDevice::UpdateWindowSize() {
   if (!impl_->initialized) return false;
 #if defined(_WIN32)
   const auto hwnd = static_cast<HWND>(impl_->hwnd);
@@ -426,21 +425,21 @@ bool NativeDevice::updateWindowSize() {
       client.right <= 0 || client.bottom <= 0) return false;
   const auto& desc = impl_->swapchain->GetDesc();
   if (desc.Width != uint32_t(client.right) || desc.Height != uint32_t(client.bottom)) {
-    resize(uint32_t(client.right), uint32_t(client.bottom));
-    REXLOG_INFO("NativeDevice: client resized to {}x{}", client.right, client.bottom);
+    Resize(uint32_t(client.right), uint32_t(client.bottom));
+    REXLOG_INFO("VulkanDevice: client resized to {}x{}", client.right, client.bottom);
   }
 #endif
   return true;
 }
 
-void NativeDevice::resize(uint32_t width, uint32_t height) {
+void VulkanDevice::Resize(uint32_t width, uint32_t height) {
   if (!impl_->initialized) return;
   if (width == 0 || height == 0) return;
   impl_->swapchain->Resize(width, height,
                            Diligent::SURFACE_TRANSFORM_OPTIMAL);
 }
 
-void NativeDevice::shutdown() {
+void VulkanDevice::Shutdown() {
   if (impl_->context) {
     impl_->context->Flush();
     impl_->context->WaitForIdle();
@@ -456,4 +455,4 @@ void NativeDevice::shutdown() {
   impl_->initialized = false;
 }
 
-}  // namespace dante
+}  // namespace renderer

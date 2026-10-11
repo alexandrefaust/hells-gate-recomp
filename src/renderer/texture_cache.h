@@ -16,7 +16,7 @@ struct ITextureView;
 struct ISampler;
 }  // namespace Diligent
 
-namespace native {
+namespace renderer {
 
 class TextureCache {
  public:
@@ -73,4 +73,4 @@ class TextureCache {
   std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace native
+}  // namespace renderer

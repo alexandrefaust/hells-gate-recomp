@@ -16,8 +16,8 @@
 #include <rex/logging/macros.h>
 
 #include "session_info.h"
-#include "native_renderer/dante_device.h"
-#include "native_renderer/dante_graphics_system.h"
+#include "renderer/renderer.h"
+#include "renderer/renderer_config.h"
 
 #include <array>
 #include <chrono>
@@ -257,32 +257,33 @@ class DantesInfernoApp : public rex::ReXApp {
 
   void OnPostSetup() override {
     session_info::Log();
-    dante::ApplyDanteRendererConfig();
+    renderer::ConfigureSyncOnlyGpu();
     if (rex::cvar::Query<std::string>("renderer") == "dante") {
-      native::StartDanteDevice(window());
+      renderer::Start(window());
       // renderer=dante sets the aspect from a resolution wider than 16:9.
       g_ultrawide_target_aspect = static_cast<float>(REXCVAR_GET(ultrawide_target_aspect));
       // Button glyphs follow the controller in use, unless glyph_family forces a set.
       auto* input = dynamic_cast<rex::input::InputSystem*>(runtime()->input_system());
-      native::SetButtonGlyphStyleSource([input] {
+      renderer::SetButtonGlyphStyleSource([input] {
+        using renderer::GlyphStyle;
         std::string family = REXCVAR_GET(glyph_family);
-        if (family == "xbox360") return 0;
-        if (family == "playstation4") return 1;
-        if (family == "playstation5") return 2;
-        if (family == "keyboard") return 3;
-        if (!input) return 0;
+        if (family == "xbox360") return GlyphStyle::kXbox;
+        if (family == "playstation4") return GlyphStyle::kPlayStation4;
+        if (family == "playstation5") return GlyphStyle::kPlayStation5;
+        if (family == "keyboard") return GlyphStyle::kKeyboard;
+        if (!input) return GlyphStyle::kXbox;
         switch (input->ActiveButtonLabels(0)) {
-          case rex::input::ButtonLabels::kPlayStation4: return 1;
-          case rex::input::ButtonLabels::kPlayStation5: return 2;
-          case rex::input::ButtonLabels::kKeyboard: return 3;
-          default: return 0;
+          case rex::input::ButtonLabels::kPlayStation4: return GlyphStyle::kPlayStation4;
+          case rex::input::ButtonLabels::kPlayStation5: return GlyphStyle::kPlayStation5;
+          case rex::input::ButtonLabels::kKeyboard: return GlyphStyle::kKeyboard;
+          default: return GlyphStyle::kXbox;
         }
       });
       // Keyboard glyphs show the live keybinds (the launcher and the settings
       // overlay can change them).
-      native::SetButtonGlyphBindingsSource([] {
+      renderer::SetButtonGlyphBindingsSource([] {
         auto bind = [](const char* name) { return rex::cvar::Query<std::string>(name); };
-        native::KeyBindings k;
+        renderer::KeyBindings k;
         k.a = bind("keybind_a");
         k.b = bind("keybind_b");
         k.x = bind("keybind_x");
@@ -394,9 +395,9 @@ class DantesInfernoApp : public rex::ReXApp {
       REXLOG_INFO("dante_record_frames: {}", start ? "recording 3600 frames" : "stopped");
     });
 
-    rex::ui::RegisterBind("bind_native_observe", "F9",
-                          "M2 shadow observer for 3 frames", [this] {
-      bool ok = rex::cvar::SetFlagByName("native_observe_frames", "3");
+    rex::ui::RegisterBind("bind_verify_gpu_state", "F9",
+                          "Verify the GPU state of 3 frames", [] {
+      bool ok = rex::cvar::SetFlagByName("verify_gpu_state_frames", "3");
       REXLOG_INFO("NATIVE-OBS trigger: set={}", ok);
     });
 
@@ -519,11 +520,11 @@ class DantesInfernoApp : public rex::ReXApp {
   }
 
   void OnShutdown() override {
-    native::StopDanteDevice();
+    renderer::Stop();
     rex::ui::UnregisterBind("bind_fast_forward");
     rex::ui::UnregisterBind("bind_pass_trace");
     rex::ui::UnregisterBind("bind_d3d_trace");
-    rex::ui::UnregisterBind("bind_native_observe");
+    rex::ui::UnregisterBind("bind_verify_gpu_state");
     rex::ui::UnregisterBind("bind_host_rendering");
     rex::ui::UnregisterBind("bind_dante_debug_view");
     rex::ui::UnregisterBind("bind_dante_record");

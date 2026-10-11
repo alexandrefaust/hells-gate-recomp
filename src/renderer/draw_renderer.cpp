@@ -1,7 +1,9 @@
-#include "dante_draws.h"
+#include "draw_renderer.h"
 
-#include "dante_stats.h"
-#include "dante_textures.h"
+#include "guest_memory.h"
+
+#include "render_stats.h"
+#include "texture_cache.h"
 
 #include "Common/interface/RefCntAutoPtr.hpp"
 #include "Graphics/GraphicsEngine/interface/Buffer.h"
@@ -39,7 +41,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace native {
+namespace renderer {
 namespace {
 
 namespace dl = Diligent;
@@ -48,15 +50,7 @@ namespace reg = rex::graphics::reg;
 namespace xenos = rex::graphics::xenos;
 using Translator = rg::SpirvShaderTranslator;
 
-constexpr uint32_t kSharedMemorySize = 512u * 1024 * 1024;
 constexpr uint32_t kIndexRingSize = 32u * 1024 * 1024;
-// Guest physical memory is mirrored at 0xA0000000 in the virtual address space.
-constexpr uint32_t kPhysicalMirror = 0xA0000000u;
-
-const uint8_t* Physical(const uint8_t* base, uint32_t address) {
-  return base + kPhysicalMirror + (address & 0x1FFFFFFFu);
-}
-
 struct PipelineKey {
   uint64_t vertex_key;
   uint64_t pixel_key;
@@ -218,7 +212,7 @@ struct DrawRenderer::Impl {
 
   std::unordered_map<PipelineKey, Pipeline, PipelineKeyHash> pipelines;
 
-  uint32_t draws = 0, skipped_points = 0, skipped_other = 0, pipeline_failures = 0;
+  uint32_t draws = 0, skipped_other = 0, pipeline_failures = 0;
   uint32_t skipped_targets = 0, skipped_viewport = 0, skipped_scissor = 0, skipped_pipeline = 0;
   uint64_t uploaded_bytes = 0;
 
@@ -245,7 +239,7 @@ dl::IBuffer* DrawRenderer::Impl::CreateUniform(const char* name, uint32_t size) 
 bool DrawRenderer::Impl::Initialize() {
   dl::BufferDesc shared;
   shared.Name = "XenosSharedMemory";
-  shared.Size = kSharedMemorySize;
+  shared.Size = guest::kPhysicalMemorySize;
   shared.BindFlags = dl::BIND_SHADER_RESOURCE | dl::BIND_UNORDERED_ACCESS;
   shared.Usage = dl::USAGE_DEFAULT;
   shared.Mode = dl::BUFFER_MODE_RAW;
@@ -300,15 +294,15 @@ bool DrawRenderer::Impl::Initialize() {
 
 void DrawRenderer::Impl::Upload(const uint8_t* base, uint32_t address, uint32_t size,
                                 bool always_check) {
-  if (!size || address >= kSharedMemorySize) return;
-  size = std::min(size, kSharedMemorySize - address);
+  if (!size || address >= guest::kPhysicalMemorySize) return;
+  size = std::min(size, guest::kPhysicalMemorySize - address);
   uint32_t end = address + size;
   auto it = uploaded.find(address);
   if (!always_check && it != uploaded.end() && it->second.end == end &&
       it->second.checked_frame == frame && frame - it->second.changed_frame > kStaticFrames) {
     return;
   }
-  const uint8_t* data = Physical(base, address);
+  const uint8_t* data = guest::PhysicalPtr(base, address);
   uint64_t hash = XXH3_64bits(data, size);
   if (it != uploaded.end() && it->second.end == end && it->second.hash == hash) {
     it->second.checked_frame = frame;
@@ -431,7 +425,7 @@ Pipeline* DrawRenderer::Impl::GetPipeline(const PipelineKey& key, const DrawShad
                       : ds.FrontFace;
   }
   device->CreateGraphicsPipelineState(ci, &p.pso);
-  ++g_dante_stats.pipelines_created;
+  ++g_render_stats.pipelines_created;
   if (!p.pso) {
     if (++pipeline_failures <= 8) {
       REXLOG_WARN("NATIVE-DRAW: pipeline failed VS {:016X} PS {:016X} topology {}",
@@ -520,7 +514,7 @@ bool DrawRenderer::Draw(const rg::RegisterFile& regs, const DrawShaders& shaders
   if (indexed) {
     uint32_t dma_base = regs.values[rg::XE_GPU_REG_VGT_DMA_BASE];
     auto dma_size = regs.Get<reg::VGT_DMA_SIZE>();
-    const uint8_t* src = Physical(base, dma_base & ~(index32 ? 3u : 1u));
+    const uint8_t* src = guest::PhysicalPtr(base, dma_base & ~(index32 ? 3u : 1u));
     // Primitive reset only applies to strips (as in the SDK primitive processor).
     bool reset_enabled = regs.Get<reg::PA_SU_SC_MODE_CNTL>().multi_prim_ib_ena &&
                          (topology == dl::PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP ||
@@ -944,11 +938,11 @@ bool DrawRenderer::Draw(const rg::RegisterFile& regs, const DrawShaders& shaders
 
 void DrawRenderer::LogStats() {
   REXLOG_INFO(
-      "NATIVE-DRAW draws={} pipelines={} pipeline_failures={} skipped: points={} other={} "
+      "NATIVE-DRAW draws={} pipelines={} pipeline_failures={} skipped: other={} "
       "targets={} viewport={} scissor={} pipeline={} uploaded={} KB",
-      impl_->draws, impl_->pipelines.size(), impl_->pipeline_failures, impl_->skipped_points,
-      impl_->skipped_other, impl_->skipped_targets, impl_->skipped_viewport,
+      impl_->draws, impl_->pipelines.size(), impl_->pipeline_failures, impl_->skipped_other,
+      impl_->skipped_targets, impl_->skipped_viewport,
       impl_->skipped_scissor, impl_->skipped_pipeline, impl_->uploaded_bytes / 1024);
 }
 
-}  // namespace native
+}  // namespace renderer

@@ -1,4 +1,4 @@
-#include "dante_dump.h"
+#include "png_dump.h"
 
 #include "Common/interface/RefCntAutoPtr.hpp"
 #include "Graphics/GraphicsEngine/interface/DeviceContext.h"
@@ -28,7 +28,7 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "../../thirdparty/diligent-core/ThirdParty/stb/stb_image_write.h"
 
-namespace native {
+namespace renderer {
 namespace {
 
 namespace dl = Diligent;
@@ -177,4 +177,4 @@ bool DumpTexturePng(dl::IRenderDevice* device, dl::IDeviceContext* context, dl::
   return ok;
 }
 
-}  // namespace native
+}  // namespace renderer

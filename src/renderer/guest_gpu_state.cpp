@@ -1,8 +1,11 @@
-#include "gpu_state.h"
+#include "guest_gpu_state.h"
 
 #include <rex/ppc/context.h>
 
-namespace native::gpu {
+namespace renderer {
+
+using namespace guest;
+
 namespace {
 
 // Per vec4 (0-511): buffer address loaded by 0x8291D778, 0 = shadow.
@@ -21,8 +24,8 @@ std::array<StaleLiteral, 512> g_stale_literals{};
 // Literal constants loaded by the program flush (0x827EA218): records
 // {u16 vec4, u16 dwords, u32 offset} at blk + [blk+20] + 20, data at base + offset.
 uint32_t ApplyShaderLiterals(const uint8_t* base, uint32_t blk, uint32_t ucode_base,
-                             State& state) {
-  if (!Plausible(blk) || !Plausible(ucode_base)) return 0;
+                             GuestRegisters& state) {
+  if (!IsPlausibleAddress(blk) || !IsPlausibleAddress(ucode_base)) return 0;
   uint32_t table_offset = Load32(base, blk + 20);
   if (!table_offset) return 0;
   uint32_t table = blk + table_offset;
@@ -35,7 +38,7 @@ uint32_t ApplyShaderLiterals(const uint8_t* base, uint32_t blk, uint32_t ucode_b
     if (!dword_count || dword_count > 1024) break;
     uint32_t data = ucode_base + Load32(base, rec + 4);
     rec += 8;
-    if (!Plausible(data)) break;
+    if (!IsPlausibleAddress(data)) break;
     for (uint32_t d = 0; d < dword_count; ++d) {
       uint32_t value = Load32(base, data + d * 4);
       uint32_t vec4 = vec4_index + d / 4;
@@ -43,7 +46,7 @@ uint32_t ApplyShaderLiterals(const uint8_t* base, uint32_t blk, uint32_t ucode_b
         g_stale_literals[vec4].valid = true;
         g_stale_literals[vec4].value[d & 3] = value;
       }
-      int index = StateIndex(0x4000 + vec4_index * 4 + d);
+      int index = GuestRegisterIndex(0x4000 + vec4_index * 4 + d);
       if (index < 0) continue;
       state[index] = value;
       ++applied;
@@ -73,7 +76,7 @@ void TrackConstantBufferLoad(const PPCContext& ctx, const uint8_t* base) {
   uint32_t start = (ctx.r4.u32 << 8) + ctx.r5.u32;
   uint32_t count = ctx.r6.u32;
   uint32_t buffer = ctx.r7.u32;
-  if (!Plausible(buffer)) return;
+  if (!IsPlausibleAddress(buffer)) return;
   uint32_t source = Load32(base, buffer + 0x18) + ctx.r8.u32 * 16;
   for (uint32_t i = 0; i < count && start + i < 512; ++i) {
     g_constant_source[start + i] = source + i * 16;
@@ -81,8 +84,8 @@ void TrackConstantBufferLoad(const PPCContext& ctx, const uint8_t* base) {
   }
 }
 
-CaptureStats Capture(uint32_t device, const uint8_t* base, State& out) {
-  CaptureStats stats;
+DrawStateStats CaptureDrawState(uint32_t device, const uint8_t* base, GuestRegisters& out) {
+  DrawStateStats stats;
   uint32_t index = 0;
   for (const auto& range : kShadowRanges) {
     for (uint32_t i = 0; i < range.count; ++i) {
@@ -93,7 +96,7 @@ CaptureStats Capture(uint32_t device, const uint8_t* base, State& out) {
     const StaleLiteral& stale = g_stale_literals[vec4];
     if (!stale.valid) continue;
     for (uint32_t c = 0; c < 4; ++c) {
-      int state_index = StateIndex(0x4000 + vec4 * 4 + c);
+      int state_index = GuestRegisterIndex(0x4000 + vec4 * 4 + c);
       if (state_index >= 0) out[state_index] = stale.value[c];
     }
   }
@@ -101,7 +104,7 @@ CaptureStats Capture(uint32_t device, const uint8_t* base, State& out) {
     uint32_t source = g_constant_source[vec4];
     if (!source) continue;
     for (uint32_t c = 0; c < 4; ++c) {
-      int state_index = StateIndex(0x4000 + vec4 * 4 + c);
+      int state_index = GuestRegisterIndex(0x4000 + vec4 * 4 + c);
       if (state_index < 0) continue;
       out[state_index] = Load32(base, source + c * 4);
       ++stats.buffer_constant_dwords;
@@ -109,13 +112,13 @@ CaptureStats Capture(uint32_t device, const uint8_t* base, State& out) {
   }
   uint32_t vs = Load32(base, device + kDevVertexShader);
   uint32_t ps = Load32(base, device + kDevPixelShader);
-  if (Plausible(vs)) {
+  if (IsPlausibleAddress(vs)) {
     stats.literal_dwords += ApplyShaderLiterals(base, vs + 872, Load32(base, vs + 0x20), out);
   }
-  if (Plausible(ps)) {
+  if (IsPlausibleAddress(ps)) {
     stats.literal_dwords += ApplyShaderLiterals(base, ps + 40, Load32(base, ps + 0x18), out);
   }
   return stats;
 }
 
-}  // namespace native::gpu
+}  // namespace renderer

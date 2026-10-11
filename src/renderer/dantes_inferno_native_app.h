@@ -2,7 +2,7 @@
 #pragma once
 
 #include "dantes_inferno_app.h"
-#include "native_renderer/dante_graphics_system.h"
+#include "renderer_config.h"
 
 class DantesInfernoNativeApp : public DantesInfernoApp {
  public:
@@ -16,8 +16,8 @@ class DantesInfernoNativeApp : public DantesInfernoApp {
 
   void OnPreSetup(rex::RuntimeConfig& config) override {
     DantesInfernoApp::OnPreSetup(config);
-    dante::ApplyRenderScaleConfig();
-    if (auto graphics = dante::CreateConfiguredGraphicsSystem()) {
+    renderer::ApplyNativeRenderScale();
+    if (auto graphics = renderer::CreateGraphicsSystem()) {
       config.graphics = std::move(graphics);
     }
   }

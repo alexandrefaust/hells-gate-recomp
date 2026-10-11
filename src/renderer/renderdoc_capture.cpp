@@ -13,7 +13,7 @@ REXCVAR_DEFINE_BOOL(rdoc_capture_frame, false, "Diagnostics",
                     "Under RenderDoc: capture the GPU work of the next guest frames "
                     "(swap to swap, Insert)");
 
-namespace native {
+namespace renderer {
 namespace {
 
 constexpr int kCapturedSwaps = 2;
@@ -56,4 +56,4 @@ void RenderDocOnGuestSwap() {
   REXLOG_INFO("RenderDoc: capturing {} guest frames", kCapturedSwaps);
 }
 
-}  // namespace native
+}  // namespace renderer

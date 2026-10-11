@@ -1,7 +1,7 @@
-#include "dante_shaders.h"
+#include "shader_cache.h"
 
-#include "dante_dump.h"
-#include "dante_stats.h"
+#include "png_dump.h"
+#include "render_stats.h"
 
 #include "Common/interface/RefCntAutoPtr.hpp"
 #include "Graphics/GraphicsEngine/interface/RenderDevice.h"
@@ -31,7 +31,7 @@
 REXCVAR_DEFINE_BOOL(dante_dump_shaders, false, "Diagnostics",
                     "renderer=dante: write each guest shader's disassembly to frame_dump/");
 
-namespace native {
+namespace renderer {
 namespace {
 
 namespace dl = Diligent;
@@ -176,7 +176,7 @@ struct ShaderCache::Impl {
     }
     if (result) {
       ++translated;
-      ++g_dante_stats.shaders_compiled;
+      ++g_render_stats.shaders_compiled;
     } else {
       ++failed;
       REXLOG_WARN("NATIVE-SH {} {:016X} mod {:016X} failed ({})", is_vertex ? "VS" : "PS", hash,
@@ -279,4 +279,4 @@ void ShaderCache::LogStats() {
               impl_->translated, impl_->failed);
 }
 
-}  // namespace native
+}  // namespace renderer

@@ -1,4 +1,4 @@
-#include "dante_graphics_system.h"
+#include "renderer_config.h"
 
 #include <rex/cvar.h>
 #include <rex/logging/macros.h>
@@ -29,9 +29,9 @@ REXCVAR_DEFINE_BOOL(dante_packet_inventory, false, "Diagnostics",
                     "renderer=dante: turn on the plugin's gpu_packet_inventory (PM4 packets "
                     "the sync-only command processor executes, logged every 10 s)");
 
-namespace dante {
+namespace renderer {
 
-std::unique_ptr<rex::system::IGraphicsSystem> CreateConfiguredGraphicsSystem() {
+std::unique_ptr<rex::system::IGraphicsSystem> CreateGraphicsSystem() {
   const std::string renderer = rex::cvar::Query<std::string>("renderer");
   if (renderer == "xenos" || renderer == "dante") return nullptr;
   if (renderer == "native") {
@@ -47,7 +47,7 @@ std::unique_ptr<rex::system::IGraphicsSystem> CreateConfiguredGraphicsSystem() {
   return nullptr;
 }
 
-void ApplyDanteRendererConfig() {
+void ConfigureSyncOnlyGpu() {
   if (rex::cvar::Query<std::string>("renderer") != "dante") {
     return;
   }
@@ -63,7 +63,7 @@ void ApplyDanteRendererConfig() {
   }
 }
 
-void ApplyRenderScaleConfig() {
+void ApplyNativeRenderScale() {
   const std::string mode =
       rex::cvar::Query<std::string>("native_render_scale");
   if (mode.empty() || mode == "off") {
@@ -93,4 +93,4 @@ void ApplyRenderScaleConfig() {
   rex::cvar::SetFlagByName("resolution_scale", std::to_string(scale));
 }
 
-}  // namespace dante
+}  // namespace renderer

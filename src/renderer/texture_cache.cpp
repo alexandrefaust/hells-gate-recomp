@@ -1,4 +1,6 @@
-#include "dante_textures.h"
+#include "texture_cache.h"
+
+#include "guest_memory.h"
 
 #include "Common/interface/RefCntAutoPtr.hpp"
 #include "Graphics/GraphicsEngine/interface/DeviceContext.h"
@@ -26,15 +28,12 @@
 #include <unordered_map>
 #include <vector>
 
-namespace native {
+namespace renderer {
 namespace {
 
 namespace dl = Diligent;
 namespace rg = rex::graphics;
 namespace xenos = rex::graphics::xenos;
-
-constexpr uint32_t kSharedMemorySize = 512u * 1024 * 1024;
-constexpr uint32_t kPhysicalMirror = 0xA0000000u;
 
 struct HostFormat {
   dl::TEXTURE_FORMAT format;
@@ -259,9 +258,9 @@ struct TextureCache::Impl {
       XXH3_state_t state;
       XXH3_64bits_reset(&state);
       auto sample = [&](uint32_t address, uint32_t size) {
-        if (!size || address >= kSharedMemorySize) return;
-        size = std::min(size, kSharedMemorySize - address);
-        const uint8_t* p = base + kPhysicalMirror + address;
+        if (!size || address >= guest::kPhysicalMemorySize) return;
+        size = std::min(size, guest::kPhysicalMemorySize - address);
+        const uint8_t* p = guest::PhysicalPtr(base, address);
         for (uint32_t offset = 0; offset < size; offset += 4096) {
           XXH3_64bits_update(&state, p + offset, std::min<uint32_t>(64, size - offset));
         }
@@ -310,10 +309,10 @@ struct TextureCache::Impl {
                                             bpb_log2))
                                       : (y + oy) * pitch_bytes + (x + ox) * bpb;
             uint32_t source = address + in;
-            if (source >= kSharedMemorySize || kSharedMemorySize - source < bpb) continue;
+            if (source >= guest::kPhysicalMemorySize || guest::kPhysicalMemorySize - source < bpb) continue;
             rg::texture_conversion::CopySwapBlock(xenos::Endian(fetch.endianness),
                                                   dst + (size_t(y) * blocks_x + x) * bpb,
-                                                  base + kPhysicalMirror + source, bpb);
+                                                  guest::PhysicalPtr(base, source), bpb);
           }
         }
         out.subresources.push_back(
@@ -421,7 +420,7 @@ dl::ITextureView* TextureCache::GetView2D(const uint32_t fetch_dwords[6], const 
     return nullptr;
   }
   uint32_t size = info.extent.all_blocks() * host.bytes_per_block;
-  if (!size || address >= kSharedMemorySize || size > kSharedMemorySize - address) return nullptr;
+  if (!size || address >= guest::kPhysicalMemorySize || size > guest::kPhysicalMemorySize - address) return nullptr;
 
   // The texture is identified by its address, format, size and mip setup.
   // (dword 0: pitch and tiling; 1: base and format; 2: size; 5: mip address).
@@ -494,7 +493,7 @@ dl::ITextureView* TextureCache::GetViewCube(const uint32_t fetch_dwords[6], cons
       (extent.block_pitch_h * extent.block_pitch_v * host.bytes_per_block + 4095) & ~4095u;
   uint32_t address = info.memory.base_address;
   uint32_t size = face_stride * 6;
-  if (!face_stride || address >= kSharedMemorySize || size > kSharedMemorySize - address) {
+  if (!face_stride || address >= guest::kPhysicalMemorySize || size > guest::kPhysicalMemorySize - address) {
     return nullptr;
   }
   uint32_t swizzle = ComposeSwizzle(fetch.swizzle, info.format);
@@ -562,8 +561,8 @@ dl::ITextureView* TextureCache::GetView3D(const uint32_t fetch_dwords[6], const 
   uint32_t pitch = extent.block_pitch_h, pitch_v = extent.block_pitch_v;
   uint32_t address = info.memory.base_address;
   uint32_t size = pitch * pitch_v * depth * host.bytes_per_block;
-  if (!size || address >= kSharedMemorySize || size > kSharedMemorySize - address) return nullptr;
-  const uint8_t* src = base + kPhysicalMirror + address;
+  if (!size || address >= guest::kPhysicalMemorySize || size > guest::kPhysicalMemorySize - address) return nullptr;
+  const uint8_t* src = guest::PhysicalPtr(base, address);
   uint32_t swizzle = ComposeSwizzle(fetch.swizzle, info.format);
 
   uint64_t key = XXH3_64bits(fetch_dwords, 6 * sizeof(uint32_t)) ^ 0x3D3D3D3Dull;
@@ -704,4 +703,4 @@ void TextureCache::LogStats() {
               impl_->samplers.size());
 }
 
-}  // namespace native
+}  // namespace renderer

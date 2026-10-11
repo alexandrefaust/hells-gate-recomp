@@ -16,7 +16,7 @@ class RegisterFile;
 class SpirvShader;
 }  // namespace rex::graphics
 
-namespace native {
+namespace renderer {
 
 struct GuestShaderCode {
   const uint32_t* ucode = nullptr;  // host pointer to big-endian guest ucode
@@ -51,4 +51,4 @@ class ShaderCache {
   std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace native
+}  // namespace renderer

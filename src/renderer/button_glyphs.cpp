@@ -1,4 +1,4 @@
-#include "dante_glyphs.h"
+#include "button_glyphs.h"
 
 #include "Common/interface/RefCntAutoPtr.hpp"
 #include "Graphics/GraphicsEngine/interface/RenderDevice.h"
@@ -28,7 +28,7 @@
 #endif
 #include <windows.h>
 
-namespace native {
+namespace renderer {
 namespace {
 
 namespace dl = Diligent;
@@ -1481,4 +1481,4 @@ dl::ITexture* ButtonGlyphs::Replace(uint64_t content_hash,
   return texture;
 }
 
-}  // namespace native
+}  // namespace renderer

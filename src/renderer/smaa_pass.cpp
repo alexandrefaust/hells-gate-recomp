@@ -1,6 +1,6 @@
-#include "dante_smaa.h"
+#include "smaa_pass.h"
 
-#include "native_device.h"
+#include "vulkan_device.h"
 
 #include "Common/interface/RefCntAutoPtr.hpp"
 #include "Graphics/GraphicsEngine/interface/Buffer.h"
@@ -22,7 +22,7 @@
 #include "../../thirdparty/smaa/Textures/AreaTex.h"
 #include "../../thirdparty/smaa/Textures/SearchTex.h"
 
-namespace native {
+namespace renderer {
 namespace {
 
 namespace dl = Diligent;
@@ -131,7 +131,7 @@ struct Pass {
 }  // namespace
 
 struct SmaaPass::Impl {
-  dante::NativeDevice* device = nullptr;
+  renderer::VulkanDevice* device = nullptr;
   bool failed = false;
   dl::RefCntAutoPtr<dl::IShader> vs;
   dl::RefCntAutoPtr<dl::IBuffer> constants;
@@ -145,12 +145,12 @@ struct SmaaPass::Impl {
   dl::TEXTURE_FORMAT format = dl::TEX_FORMAT_UNKNOWN;
   dl::RefCntAutoPtr<dl::ITexture> edges_tex, weights_tex, copy_tex;
 
-  dl::IRenderDevice* render_device() const { return device->renderDevice(); }
+  dl::IRenderDevice* render_device() const { return device->RenderDevice(); }
 
   bool MakePass(Pass& pass, const char* name, const char* main, dl::TEXTURE_FORMAT target) {
     std::string source = PixelSource(main);
     dl::RefCntAutoPtr<dl::IShader> ps;
-    ps.Attach(device->createGlslShader(source.c_str(), true, name));
+    ps.Attach(device->CreateGlslShader(source.c_str(), true, name));
     if (!ps) return false;
     dl::GraphicsPipelineStateCreateInfo ci;
     ci.PSODesc.Name = name;
@@ -192,7 +192,7 @@ struct SmaaPass::Impl {
   }
 
   bool Init() {
-    vs.Attach(device->createGlslShader(kFullscreenVS, false, "SmaaVS"));
+    vs.Attach(device->CreateGlslShader(kFullscreenVS, false, "SmaaVS"));
     dl::BufferDesc cb;
     cb.Name = "SmaaConstants";
     cb.Size = 16;
@@ -275,7 +275,7 @@ struct SmaaPass::Impl {
   }
 };
 
-SmaaPass::SmaaPass(dante::NativeDevice* device) : impl_(std::make_unique<Impl>()) {
+SmaaPass::SmaaPass(renderer::VulkanDevice* device) : impl_(std::make_unique<Impl>()) {
   impl_->device = device;
   if (!impl_->Init()) {
     impl_->failed = true;
@@ -296,7 +296,7 @@ bool SmaaPass::Apply(dl::ITexture* color) {
                 int(desc.Format));
     return false;
   }
-  dl::IDeviceContext* context = m.device->immediateContext();
+  dl::IDeviceContext* context = m.device->Context();
   {
     dl::MapHelper<float> map(context, m.constants, dl::MAP_WRITE, dl::MAP_FLAG_DISCARD);
     map[0] = 1.0f / float(m.width);
@@ -324,4 +324,4 @@ bool SmaaPass::Apply(dl::ITexture* color) {
   return true;
 }
 
-}  // namespace native
+}  // namespace renderer

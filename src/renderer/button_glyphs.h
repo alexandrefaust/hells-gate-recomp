@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include "dante_textures.h"
+#include "texture_cache.h"
 
 #include <cstdint>
 #include <memory>
@@ -17,7 +17,7 @@ struct IRenderDevice;
 struct ITexture;
 }  // namespace Diligent
 
-namespace native {
+namespace renderer {
 
 enum class GlyphStyle { kXbox, kPlayStation4, kPlayStation5, kKeyboard };
 
@@ -51,4 +51,4 @@ class ButtonGlyphs {
   std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace native
+}  // namespace renderer

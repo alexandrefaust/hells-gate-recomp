@@ -9,15 +9,18 @@
 // elapsed and the button presses since its last run. Refresh rates that are
 // multiples of 60 keep the UI updates evenly spaced; other rates judder.
 
+#include "guest_memory.h"
+
 #include <rex/cvar.h>
 #include <rex/hook.h>
 #include <rex/ppc/context.h>
 
 #include <chrono>
 #include <cstdint>
-#include <cstring>
 
 namespace {
+
+using namespace guest;
 
 constexpr double kUiRate = 60.0;
 
@@ -32,37 +35,6 @@ constexpr uint32_t kGameFrameTime = 0x82CBEB60;
 // Input manager pads: 4 records of 68 bytes from +60; buttons at +0, the
 // previous frame's buttons at +2 (presses = buttons & ~previous).
 constexpr uint32_t kPadsOffset = 60, kPadStride = 68, kPadCount = 4;
-
-uint32_t LoadU32(uint8_t* base, uint32_t address) {
-  uint32_t v;
-  std::memcpy(&v, base + address, 4);
-  return __builtin_bswap32(v);
-}
-
-uint16_t LoadU16(uint8_t* base, uint32_t address) {
-  uint16_t v;
-  std::memcpy(&v, base + address, 2);
-  return __builtin_bswap16(v);
-}
-
-void StoreU16(uint8_t* base, uint32_t address, uint16_t v) {
-  v = __builtin_bswap16(v);
-  std::memcpy(base + address, &v, 2);
-}
-
-float LoadFloat(uint8_t* base, uint32_t address) {
-  uint32_t v = LoadU32(base, address);
-  float f;
-  std::memcpy(&f, &v, 4);
-  return f;
-}
-
-void StoreFloat(uint8_t* base, uint32_t address, float f) {
-  uint32_t v;
-  std::memcpy(&v, &f, 4);
-  v = __builtin_bswap32(v);
-  std::memcpy(base + address, &v, 4);
-}
 
 bool UiGated() {
   static const bool gated = rex::cvar::Query<double>("video_mode_refresh_rate") > kUiRate + 0.5;
@@ -102,9 +74,9 @@ REX_EXTERN(__imp__sub_82629450);
 REX_HOOK_RAW(sub_82629450) {
   int stream = -1;
   if (UiGated() && ctx.r4.u32 == kUpdateMessage) {
-    uint32_t id = LoadU32(base, kUpdateMessage);
+    uint32_t id = Load32(base, kUpdateMessage);
     for (int i = 0; i < 2; ++i) {
-      if (id == LoadU32(base, kUiUpdateIds[i])) stream = i;
+      if (id == Load32(base, kUiUpdateIds[i])) stream = i;
     }
   }
   if (stream < 0) {
@@ -124,14 +96,14 @@ REX_HOOK_RAW(sub_82629450) {
   uint32_t pads = g_input_manager ? g_input_manager + kPadsOffset : 0;
   for (uint32_t i = 0; pads && i < kPadCount; ++i) {
     uint32_t pad = pads + i * kPadStride;
-    previous[i] = LoadU16(base, pad + 2);
-    StoreU16(base, pad + 2, s.buttons_at_last_run[i]);
+    previous[i] = Load16(base, pad + 2);
+    Store16(base, pad + 2, s.buttons_at_last_run[i]);
   }
   __imp__sub_82629450(ctx, base);
   for (uint32_t i = 0; pads && i < kPadCount; ++i) {
     uint32_t pad = pads + i * kPadStride;
-    s.buttons_at_last_run[i] = LoadU16(base, pad);
-    StoreU16(base, pad + 2, previous[i]);
+    s.buttons_at_last_run[i] = Load16(base, pad);
+    Store16(base, pad + 2, previous[i]);
   }
   StoreFloat(base, kGameFrameTime, frame_time);
 }

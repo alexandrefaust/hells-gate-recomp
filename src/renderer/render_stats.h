@@ -2,14 +2,14 @@
 
 #include <cstdint>
 
-namespace native {
+namespace renderer {
 
 // Render-thread counters for the performance log.
-struct DanteStats {
+struct RenderStats {
   uint64_t shaders_compiled = 0;
   uint64_t pipelines_created = 0;
 };
 
-inline DanteStats g_dante_stats;
+inline RenderStats g_render_stats;
 
-}  // namespace native
+}  // namespace renderer
