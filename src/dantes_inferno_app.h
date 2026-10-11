@@ -542,10 +542,6 @@ class DantesInfernoApp : public rex::ReXApp {
  private:
   rex::graphics::CommandProcessor* GetCommandProcessor() {
     auto* gfx_sys = runtime() ? runtime()->graphics_system() : nullptr;
-    if (auto* dante_sys =
-            dynamic_cast<dante::DanteGraphicsSystem*>(gfx_sys)) {
-      gfx_sys = dante_sys->inner();
-    }
     auto* con_sys =
         dynamic_cast<rex::graphics::GraphicsSystem*>(gfx_sys);
     return con_sys ? con_sys->command_processor() : nullptr;

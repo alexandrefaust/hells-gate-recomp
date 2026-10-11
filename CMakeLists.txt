@@ -107,7 +107,6 @@ if(DANTESINFERNO_NATIVE_RENDERER)
         src/native_renderer/dante_textures.cpp
         src/native_renderer/dante_graphics_system.cpp
         src/native_renderer/native_device.cpp
-        src/native_renderer/native_presenter.cpp
     )
     target_include_directories(dante_native_renderer PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/src/native_renderer"
@@ -228,16 +227,6 @@ if(DANTESINFERNO_NATIVE_RENDERER)
     target_link_libraries(dantes_inferno PRIVATE dante_native_renderer)
     target_compile_definitions(dantes_inferno PRIVATE DANTESINFERNO_NATIVE_RENDERER)
 
-    if(WIN32)
-        add_executable(native_renderer_test
-            src/native_renderer/native_renderer_test.cpp
-        )
-        target_link_libraries(native_renderer_test PRIVATE
-            dante_native_renderer
-        )
-        target_link_libraries(native_renderer_test PRIVATE user32 gdi32)
-    endif()
-
     set(DANTESINFERNO_NATIVE_SOURCES
         src/native_renderer/dantes_inferno_native_main.cpp
         src/native_renderer/d3d_trace.cpp
@@ -258,8 +247,4 @@ if(DANTESINFERNO_NATIVE_RENDERER)
     target_link_libraries(dantes_inferno_native PRIVATE dante_native_renderer)
     target_compile_definitions(dantes_inferno_native PRIVATE DANTESINFERNO_NATIVE_RENDERER)
 
-    message(STATUS "Native renderer (DiligentCore/Vulkan) enabled")
-    message(STATUS "  Build native_renderer_test to verify clear+present")
-    message(STATUS "  Build dantes_inferno_native for game with native renderer")
-    message(STATUS "  dantes_inferno now links native presenter (use_native_presenter cvar)")
 endif()
