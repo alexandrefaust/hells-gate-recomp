@@ -1,8 +1,9 @@
 // renderer=dante button glyphs: the game's Xbox button icon sheet and the HUD
 // art with Xbox buttons (face button spheres, shoulder plates, the Fury bar's
-// "LS RS") are replaced by PlayStation or keyboard / mouse versions generated
-// from them at runtime (no game art shipped). Keyboard versions show the
-// current bindings and are redrawn when they change.
+// "LS RS", the execution prompt's 3D trigger button) are replaced by
+// PlayStation or keyboard / mouse versions generated from them at runtime (no
+// game art shipped). Keyboard versions show the current bindings and are
+// redrawn when they change.
 
 #pragma once
 

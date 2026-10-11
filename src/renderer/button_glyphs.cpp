@@ -14,6 +14,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstring>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -118,28 +119,64 @@ Image DecodeBc3(const uint8_t* blocks, int width, int height) {
   return image;
 }
 
-// Masks
-
-// Dilation (grow) or erosion of a binary mask with a k x k square.
-std::vector<bool> Morph(const std::vector<bool>& in, int w, int h, int k, bool dilate) {
-  std::vector<bool> out(in.size());
-  int r = k / 2;
-  for (int y = 0; y < h; ++y) {
-    for (int x = 0; x < w; ++x) {
-      bool v = !dilate;
-      for (int dy = -r; dy <= r && v != dilate; ++dy) {
-        for (int dx = -r; dx <= r; ++dx) {
-          int sx = std::clamp(x + dx, 0, w - 1), sy = std::clamp(y + dy, 0, h - 1);
-          if (in[size_t(sy) * w + sx] == dilate) {
-            v = dilate;
-            break;
-          }
+Image DecodeBc1(const uint8_t* blocks, int width, int height) {
+  Image image(width, height);
+  int bx_count = (width + 3) / 4, by_count = (height + 3) / 4;
+  for (int by = 0; by < by_count; ++by) {
+    for (int bx = 0; bx < bx_count; ++bx) {
+      const uint8_t* b = blocks + (size_t(by) * bx_count + bx) * 8;
+      uint16_t c0 = uint16_t(b[0] | (b[1] << 8)), c1 = uint16_t(b[2] | (b[3] << 8));
+      float color[4][4] = {};
+      Decode565(c0, color[0]);
+      Decode565(c1, color[1]);
+      color[0][3] = color[1][3] = color[2][3] = color[3][3] = 1.0f;
+      for (int c = 0; c < 3; ++c) {
+        if (c0 > c1) {
+          color[2][c] = (2 * color[0][c] + color[1][c]) / 3.0f;
+          color[3][c] = (color[0][c] + 2 * color[1][c]) / 3.0f;
+        } else {
+          color[2][c] = (color[0][c] + color[1][c]) / 2.0f;
         }
       }
-      out[size_t(y) * w + x] = v;
+      if (c0 <= c1) color[3][3] = 0.0f;
+      uint32_t bits =
+          uint32_t(b[4]) | (uint32_t(b[5]) << 8) | (uint32_t(b[6]) << 16) | (uint32_t(b[7]) << 24);
+      for (int i = 0; i < 16; ++i) {
+        int x = bx * 4 + (i & 3), y = by * 4 + (i >> 2);
+        if (x >= width || y >= height) continue;
+        std::memcpy(image.at(x, y), color[(bits >> (2 * i)) & 3], sizeof(float) * 4);
+      }
     }
   }
-  return out;
+  return image;
+}
+
+// Masks
+
+// Dilation (grow) or erosion of a binary mask with a k x k square, as a row
+// pass and a column pass (pixels past the edge repeat the border).
+std::vector<bool> Morph(const std::vector<bool>& in, int w, int h, int k, bool dilate) {
+  int r = k / 2;
+  auto pass = [&](const std::vector<bool>& src, bool rows) {
+    std::vector<bool> out(src.size());
+    int lines = rows ? h : w, length = rows ? w : h;
+    std::vector<int> prefix(size_t(length) + 1);
+    for (int line = 0; line < lines; ++line) {
+      auto at = [&](int i) { return rows ? size_t(line) * w + i : size_t(i) * w + line; };
+      // Pixels equal to `dilate` in [0, i).
+      for (int i = 0; i < length; ++i)
+        prefix[size_t(i) + 1] = prefix[size_t(i)] + (src[at(i)] == dilate);
+      for (int i = 0; i < length; ++i) {
+        int a = i - r, b = i + r;
+        int count = prefix[size_t(std::min(b, length - 1)) + 1] - prefix[size_t(std::max(a, 0))];
+        if (a < 0) count += (src[at(0)] == dilate) ? -a : 0;
+        if (b >= length) count += (src[at(length - 1)] == dilate) ? b - length + 1 : 0;
+        out[at(i)] = count > 0 ? dilate : !dilate;
+      }
+    }
+    return out;
+  };
+  return pass(pass(in, true), false);
 }
 
 // Fills masked pixels from their unmasked neighbours (diffusion), RGB only.
@@ -1105,6 +1142,112 @@ bool FindSphere(const Image& img, const Component& c, Edit& edit) {
   return true;
 }
 
+// Dark letters of a w x h mask: 8-connected parts at least 60% as tall as the
+// tallest (drops cracks and bevel fragments); their pixels, box and count.
+void ExtractLetters(const std::vector<bool>& dark, int w, int h, std::vector<bool>& letters,
+                    int lb[4], int& count) {
+  struct Part {
+    int x0, y0, x1, y1;
+    std::vector<int> pixels;
+  };
+  std::vector<Part> parts;
+  std::vector<bool> seen(dark.size());
+  for (int i = 0; i < int(dark.size()); ++i) {
+    if (!dark[i] || seen[i]) continue;
+    Part part{w, h, -1, -1, {}};
+    std::vector<int> stack{i};
+    seen[i] = true;
+    while (!stack.empty()) {
+      int j = stack.back();
+      stack.pop_back();
+      int x = j % w, y = j / w;
+      part.pixels.push_back(j);
+      part.x0 = std::min(part.x0, x);
+      part.y0 = std::min(part.y0, y);
+      part.x1 = std::max(part.x1, x + 1);
+      part.y1 = std::max(part.y1, y + 1);
+      for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+          int nx = x + dx, ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          int k = ny * w + nx;
+          if (!dark[k] || seen[k]) continue;
+          seen[k] = true;
+          stack.push_back(k);
+        }
+      }
+    }
+    parts.push_back(std::move(part));
+  }
+  int tallest = 0;
+  for (const Part& p : parts) tallest = std::max(tallest, p.y1 - p.y0);
+  letters.assign(dark.size(), false);
+  lb[0] = w;
+  lb[1] = h;
+  lb[2] = lb[3] = -1;
+  count = 0;
+  for (const Part& p : parts) {
+    if ((p.y1 - p.y0) * 10 < tallest * 6) continue;
+    for (int j : p.pixels) letters[j] = true;
+    count += int(p.pixels.size());
+    lb[0] = std::min(lb[0], p.x0);
+    lb[1] = std::min(lb[1], p.y0);
+    lb[2] = std::max(lb[2], p.x1);
+    lb[3] = std::max(lb[3], p.y1);
+  }
+}
+
+// Reads two shoulder button letters (RB / LB / RT / LT) in box lb of a w-wide
+// letter mask; returns the PlayStation label (R1 / L1 / R2 / L2) or null.
+const wchar_t* ReadShoulderLetters(const std::vector<bool>& letters, int w, const int lb[4]) {
+  int lw = lb[2] - lb[0], lh = lb[3] - lb[1];
+  if (lw < 8 || lh < 6) return nullptr;
+  // Split the two letters at the emptiest column of the middle half.
+  auto column = [&](int x) {
+    int n = 0;
+    for (int y = lb[1]; y < lb[3]; ++y) n += letters[size_t(y) * w + x];
+    return n;
+  };
+  int split = lb[0] + lw / 2, fewest = lh + 1;
+  for (int x = lb[0] + lw / 4; x < lb[2] - lw / 4; ++x) {
+    if (column(x) < fewest) {
+      fewest = column(x);
+      split = x;
+    }
+  }
+  // Fraction of letter pixels of [x0, x1) x [y0, y1).
+  auto ink = [&](int x0, int y0, int x1, int y1) {
+    int n = 0, total = 0;
+    for (int y = y0; y < y1; ++y) {
+      for (int x = x0; x < x1; ++x) {
+        ++total;
+        n += letters[size_t(y) * w + x];
+      }
+    }
+    return total ? float(n) / float(total) : 0.0f;
+  };
+  // R has its bowl at the upper right; L is empty there.
+  int first_w = split - lb[0];
+  bool r = ink(lb[0] + first_w * 3 / 5, lb[1] + lh / 6, split, lb[1] + lh * 2 / 5) > 0.12f;
+  // B's lower half spans most of its width (the bowl); T's is a narrow stem.
+  int second_x = split + 1;
+  while (second_x < lb[2] && !column(second_x)) ++second_x;
+  int second_w = lb[2] - second_x;
+  if (first_w < 3 || second_w < 3) return nullptr;
+  int wide = 0, rows = 0;
+  for (int y = lb[1] + lh / 2; y < lb[3]; ++y, ++rows) {
+    int left = -1, right = -1;
+    for (int x = second_x; x < lb[2]; ++x) {
+      if (!letters[size_t(y) * w + x]) continue;
+      if (left < 0) left = x;
+      right = x;
+    }
+    wide += left >= 0 && (right - left + 1) * 2 >= second_w;
+  }
+  bool b = rows && wide * 2 > rows;
+  return r ? (b ? L"R1" : L"R2") : (b ? L"L1" : L"L2");
+}
+
 // A light stone plate with dark shoulder button letters (RB / LB / RT / LT).
 bool FindPlate(const Image& img, const Component& c, Edit& edit) {
   int w = c.x1 - c.x0, h = c.y1 - c.y0;
@@ -1143,102 +1286,15 @@ bool FindPlate(const Image& img, const Component& c, Edit& edit) {
       x = end;
     }
   }
-  // Letters: 8-connected dark parts at least 60% as tall as the tallest
-  // (drops bevel fragments at the corners).
-  struct Part {
-    int x0, y0, x1, y1;
-    std::vector<int> pixels;
-  };
-  std::vector<Part> parts;
-  std::vector<bool> seen(dark.size());
-  for (int i = 0; i < int(dark.size()); ++i) {
-    if (!dark[i] || seen[i]) continue;
-    Part part{w, h, -1, -1, {}};
-    std::vector<int> stack{i};
-    seen[i] = true;
-    while (!stack.empty()) {
-      int j = stack.back();
-      stack.pop_back();
-      int x = j % w, y = j / w;
-      part.pixels.push_back(j);
-      part.x0 = std::min(part.x0, x);
-      part.y0 = std::min(part.y0, y);
-      part.x1 = std::max(part.x1, x + 1);
-      part.y1 = std::max(part.y1, y + 1);
-      for (int dy = -1; dy <= 1; ++dy) {
-        for (int dx = -1; dx <= 1; ++dx) {
-          int nx = x + dx, ny = y + dy;
-          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-          int k = ny * w + nx;
-          if (!dark[k] || seen[k]) continue;
-          seen[k] = true;
-          stack.push_back(k);
-        }
-      }
-    }
-    parts.push_back(std::move(part));
-  }
-  int tallest = 0;
-  for (const Part& p : parts) tallest = std::max(tallest, p.y1 - p.y0);
-  std::vector<bool> letters(dark.size());
-  int lb[4] = {w, h, -1, -1}, count = 0;
-  for (const Part& p : parts) {
-    if ((p.y1 - p.y0) * 10 < tallest * 6) continue;
-    for (int j : p.pixels) letters[j] = true;
-    count += int(p.pixels.size());
-    lb[0] = std::min(lb[0], p.x0);
-    lb[1] = std::min(lb[1], p.y0);
-    lb[2] = std::max(lb[2], p.x1);
-    lb[3] = std::max(lb[3], p.y1);
-  }
+  std::vector<bool> letters;
+  int lb[4], count = 0;
+  ExtractLetters(dark, w, h, letters, lb, count);
   int lw = lb[2] - lb[0], lh = lb[3] - lb[1];
   if (lw < 8 || lh < 6 || lw > w * 3 / 4 || count * 25 < inside || count * 5 > inside * 2) {
     return false;
   }
-  // Split the two letters at the emptiest column of the middle half.
-  auto column = [&](int x) {
-    int n = 0;
-    for (int y = lb[1]; y < lb[3]; ++y) n += letters[size_t(y) * w + x];
-    return n;
-  };
-  int split = lb[0] + lw / 2, fewest = lh + 1;
-  for (int x = lb[0] + lw / 4; x < lb[2] - lw / 4; ++x) {
-    if (column(x) < fewest) {
-      fewest = column(x);
-      split = x;
-    }
-  }
-  // Fraction of letter pixels of [x0, x1) x [y0, y1) (cell coordinates).
-  auto ink = [&](int x0, int y0, int x1, int y1) {
-    int n = 0, total = 0;
-    for (int y = y0; y < y1; ++y) {
-      for (int x = x0; x < x1; ++x) {
-        ++total;
-        n += letters[size_t(y) * w + x];
-      }
-    }
-    return total ? float(n) / float(total) : 0.0f;
-  };
-  // R has its bowl at the upper right; L is empty there.
-  int first_w = split - lb[0];
-  bool r = ink(lb[0] + first_w * 3 / 5, lb[1] + lh / 6, split, lb[1] + lh * 2 / 5) > 0.12f;
-  // B's lower half spans most of its width (the bowl); T's is a narrow stem.
-  int second_x = split + 1;
-  while (second_x < lb[2] && !column(second_x)) ++second_x;
-  int second_w = lb[2] - second_x;
-  if (first_w < 3 || second_w < 3) return false;
-  int wide = 0, rows = 0;
-  for (int y = lb[1] + lh / 2; y < lb[3]; ++y, ++rows) {
-    int left = -1, right = -1;
-    for (int x = second_x; x < lb[2]; ++x) {
-      if (!letters[size_t(y) * w + x]) continue;
-      if (left < 0) left = x;
-      right = x;
-    }
-    wide += left >= 0 && (right - left + 1) * 2 >= second_w;
-  }
-  bool b = rows && wide * 2 > rows;
-  const wchar_t* label = r ? (b ? L"R1" : L"R2") : (b ? L"L1" : L"L2");
+  const wchar_t* label = ReadShoulderLetters(letters, w, lb);
+  if (!label) return false;
   edit = Edit{Edit::Kind::kPlate,
               {c.x0, c.y0, c.x1, c.y1},
               {c.x0 + lb[0], c.y0 + lb[1], c.x0 + lb[2], c.y0 + lb[3]},
@@ -1246,6 +1302,281 @@ bool FindPlate(const Image& img, const Component& c, Edit& edit) {
               label};
   return true;
 }
+
+// The execution prompt's 3D trigger button
+//
+// A stone button model over the enemy: a diffuse with two large dark serif
+// letters (RT) and DXT5nm normal / specular maps with the letters engraved.
+// The old letters are covered with stone from above them in every map, and
+// the new label is painted and engraved the way the old one was.
+
+// Separable Gaussian blur of a w x h field.
+std::vector<float> Blur(const std::vector<float>& in, int w, int h, float sigma) {
+  int r = std::max(1, int(std::ceil(sigma * 3.0f)));
+  std::vector<float> kernel(size_t(2 * r + 1));
+  float sum = 0.0f;
+  for (int i = -r; i <= r; ++i) {
+    kernel[size_t(i + r)] = std::exp(-0.5f * float(i * i) / (sigma * sigma));
+    sum += kernel[size_t(i + r)];
+  }
+  for (float& k : kernel) k /= sum;
+  std::vector<float> tmp(in.size()), out(in.size());
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      float acc = 0.0f;
+      for (int i = -r; i <= r; ++i) {
+        acc += in[size_t(y) * w + std::clamp(x + i, 0, w - 1)] * kernel[size_t(i + r)];
+      }
+      tmp[size_t(y) * w + x] = acc;
+    }
+  }
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      float acc = 0.0f;
+      for (int i = -r; i <= r; ++i) {
+        acc += tmp[size_t(std::clamp(y + i, 0, h - 1)) * w + x] * kernel[size_t(i + r)];
+      }
+      out[size_t(y) * w + x] = acc;
+    }
+  }
+  return out;
+}
+
+// Central differences of a w x h field.
+void Gradient(const std::vector<float>& f, int w, int h, std::vector<float>& gx,
+              std::vector<float>& gy) {
+  gx.assign(f.size(), 0.0f);
+  gy.assign(f.size(), 0.0f);
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      int x0 = std::max(x - 1, 0), x1 = std::min(x + 1, w - 1);
+      int y0 = std::max(y - 1, 0), y1 = std::min(y + 1, h - 1);
+      gx[size_t(y) * w + x] =
+          (f[size_t(y) * w + x1] - f[size_t(y) * w + x0]) / float(std::max(x1 - x0, 1));
+      gy[size_t(y) * w + x] =
+          (f[size_t(y1) * w + x] - f[size_t(y0) * w + x]) / float(std::max(y1 - y0, 1));
+    }
+  }
+}
+
+std::vector<float> ToField(const std::vector<bool>& mask) {
+  std::vector<float> f(mask.size());
+  for (size_t i = 0; i < mask.size(); ++i) f[i] = mask[i] ? 1.0f : 0.0f;
+  return f;
+}
+
+struct Engraving {
+  int w = 0, h = 0;
+  std::vector<bool> letters;  // the old letters
+  int box[4] = {};
+  int shift = 0;                         // rows down to the letter-free stone that covers them
+  std::wstring label;                    // PlayStation label (R2 ...)
+  float ink[3] = {}, highlight[3] = {};  // the letters' paint and bevel highlight
+};
+
+bool FindEngraving(const Image& img, Engraving& out) {
+  int w = img.w, h = img.h;
+  if (w != h || w < 128 || w > 512) return false;
+  std::vector<bool> dark(size_t(w) * h);
+  float lum = 0.0f;
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      float l = Luminance(img.at(x, y));
+      lum += l;
+      dark[size_t(y) * w + x] = l < 0.25f;
+    }
+  }
+  if (lum / float(w * h) < 0.3f) return false;
+  int lb[4], count = 0;
+  ExtractLetters(dark, w, h, out.letters, lb, count);
+  int lw = lb[2] - lb[0], lh = lb[3] - lb[1];
+  if (lh * 5 < h || lh * 5 > h * 3 || lw * 10 < w * 3 || lw * 5 > w * 4) return false;
+  int cx = (lb[0] + lb[2]) / 2, cy = (lb[1] + lb[3]) / 2;
+  if (cx * 4 < w || cx * 4 > w * 3 || cy * 10 < h * 3 || cy * 10 > h * 7) return false;
+  if (count * 33 < lw * lh || count * 2 > lw * lh) return false;
+  const wchar_t* label = ReadShoulderLetters(out.letters, w, lb);
+  if (!label) return false;
+  out.w = w;
+  out.h = h;
+  std::copy(lb, lb + 4, out.box);
+  out.shift = lh + 8;
+  out.label = label;
+  // Paint: the mean of the letters; highlight: the brightest twelfth of them.
+  std::vector<float> lums;
+  float ink[3] = {};
+  int n = 0;
+  auto grown = Morph(out.letters, w, h, 3, true);
+  for (int i = 0; i < w * h; ++i) {
+    const float* p = &img.px[size_t(i) * 4];
+    if (out.letters[i]) {
+      for (int c = 0; c < 3; ++c) ink[c] += p[c];
+      ++n;
+    }
+    if (grown[i]) lums.push_back(Luminance(p));
+  }
+  for (int c = 0; c < 3; ++c) out.ink[c] = ink[c] / float(std::max(n, 1));
+  std::sort(lums.begin(), lums.end());
+  float bright = lums.empty() ? 0.6f : lums[lums.size() - 1 - lums.size() / 12];
+  for (int c = 0; c < 3; ++c) out.highlight[c] = bright;
+  return true;
+}
+
+// The old letters blurred by `sigma`, its gradients, and the pixels near the
+// letters that fits look at.
+struct LetterField {
+  std::vector<int> band;
+  std::vector<float> f, gx, gy;
+};
+
+LetterField MakeLetterField(const Engraving& e, float sigma) {
+  LetterField field;
+  auto band = Morph(e.letters, e.w, e.h, 13, true);
+  for (int i = 0; i < e.w * e.h; ++i) {
+    if (band[i]) field.band.push_back(i);
+  }
+  field.f = Blur(ToField(e.letters), e.w, e.h, sigma);
+  Gradient(field.f, e.w, e.h, field.gx, field.gy);
+  return field;
+}
+
+// How much of channel c's variation around the old letters their shape
+// explains (R^2 of v = a * gx + b * gy + c * f + d); a and b out.
+float EngravingFit(const Image& img, const LetterField& field, int c, float* k_x, float* k_y) {
+  double ata[4][4] = {}, atb[4] = {}, mean = 0.0;
+  for (int i : field.band) {
+    double row[4] = {field.gx[i], field.gy[i], field.f[i], 1.0}, v = img.px[size_t(i) * 4 + c];
+    for (int r = 0; r < 4; ++r) {
+      for (int q = 0; q < 4; ++q) ata[r][q] += row[r] * row[q];
+      atb[r] += row[r] * v;
+    }
+    mean += v;
+  }
+  if (field.band.empty()) return 0.0f;
+  mean /= double(field.band.size());
+  // Gaussian elimination with partial pivoting.
+  double m[4][5];
+  for (int r = 0; r < 4; ++r) {
+    for (int q = 0; q < 4; ++q) m[r][q] = ata[r][q];
+    m[r][4] = atb[r];
+  }
+  for (int col = 0; col < 4; ++col) {
+    int pivot = col;
+    for (int r = col + 1; r < 4; ++r) {
+      if (std::abs(m[r][col]) > std::abs(m[pivot][col])) pivot = r;
+    }
+    if (std::abs(m[pivot][col]) < 1e-12) return 0.0f;
+    std::swap(m[col], m[pivot]);
+    for (int r = 0; r < 4; ++r) {
+      if (r == col) continue;
+      double factor = m[r][col] / m[col][col];
+      for (int q = col; q < 5; ++q) m[r][q] -= factor * m[col][q];
+    }
+  }
+  double coef[4];
+  for (int r = 0; r < 4; ++r) coef[r] = m[r][4] / m[r][r];
+  double total = 0.0, residual = 0.0;
+  for (int i : field.band) {
+    double v = img.px[size_t(i) * 4 + c];
+    double fit = coef[0] * field.gx[i] + coef[1] * field.gy[i] + coef[2] * field.f[i] + coef[3];
+    total += (v - mean) * (v - mean);
+    residual += (v - fit) * (v - fit);
+  }
+  if (k_x) *k_x = float(coef[0]);
+  if (k_y) *k_y = float(coef[1]);
+  return total > 1e-9 ? float(1.0 - residual / total) : 0.0f;
+}
+
+// Engraving of a DXT5nm normal map (y in green, x in alpha): bevel width and
+// depth of the old letters, to engrave the new ones the same way.
+struct NormalEngraving {
+  float sigma = 2.5f;
+  float k = 1.7f;  // x strength, also used for y (engravings are isotropic)
+  float y_sign = 1.0f;
+};
+
+NormalEngraving FitNormalEngraving(const Image& img, const Engraving& e) {
+  NormalEngraving best;
+  float best_r2 = -1.0f;
+  for (float sigma : {1.0f, 1.6f, 2.0f, 2.5f, 3.0f, 4.0f}) {
+    LetterField field = MakeLetterField(e, sigma);
+    float kx = 0.0f, ky = 0.0f, unused = 0.0f;
+    float r2 = EngravingFit(img, field, 3, &kx, &unused);
+    EngravingFit(img, field, 1, &unused, &ky);
+    if (r2 > best_r2 && std::abs(kx) > 0.2f) {
+      best_r2 = r2;
+      best = {sigma, kx, ky < 0.0f ? -1.0f : 1.0f};
+    }
+  }
+  return best;
+}
+
+// Covers the old letters with the stone `shift` rows above them, blended in
+// with a soft edge.
+void CoverLetters(Image& img, const Engraving& e) {
+  int w = e.w, h = e.h;
+  auto region = Morph(e.letters, w, h, 15, true);
+  std::vector<float> weight = Blur(ToField(region), w, h, 2.0f);
+  Image src = img;
+  for (int y = 0; y < h; ++y) {
+    int sy = ((y - e.shift) % h + h) % h;
+    for (int x = 0; x < w; ++x) {
+      float a = std::min(weight[size_t(y) * w + x] * 1.5f, 1.0f);
+      if (a <= 0.0f) continue;
+      float* p = img.at(x, y);
+      const float* q = src.at(x, sy);
+      for (int c = 0; c < 4; ++c) p[c] = p[c] * (1.0f - a) + q[c] * a;
+    }
+  }
+}
+
+// The new label's coverage in the old letters' box.
+Mask EngravedLabel(const Engraving& e, const KeyLabel& label) {
+  const float box[4] = {float(e.box[0]), float(e.box[1]), float(e.box[2]), float(e.box[3])};
+  return label.mouse >= 0 ? MouseMask(e.w, e.h, box, label.mouse)
+                          : FittedText(e.w, e.h, label.text, box);
+}
+
+void RelabelDiffuse(Image& img, const Engraving& e, const Mask& label) {
+  CoverLetters(img, e);
+  // Glossy paint: the bevel facing the upper left catches the light.
+  std::vector<float> soft = Blur(label.v, e.w, e.h, 1.6f), gx, gy;
+  Gradient(soft, e.w, e.h, gx, gy);
+  for (int i = 0; i < e.w * e.h; ++i) {
+    float a = label.v[i];
+    if (a <= 0.0f) continue;
+    float light = std::clamp((gx[i] + gy[i]) * 0.7f * 6.0f, 0.0f, 1.0f);
+    float* p = &img.px[size_t(i) * 4];
+    for (int c = 0; c < 3; ++c) {
+      float paint = e.ink[c] * (1.0f - light) + e.highlight[c] * light;
+      p[c] = p[c] * (1.0f - a) + paint * a;
+    }
+  }
+}
+
+void RelabelNormal(Image& img, const Engraving& e, const NormalEngraving& fit, const Mask& label) {
+  CoverLetters(img, e);
+  std::vector<float> f = Blur(label.v, e.w, e.h, fit.sigma), gx, gy;
+  Gradient(f, e.w, e.h, gx, gy);
+  for (int i = 0; i < e.w * e.h; ++i) {
+    float* p = &img.px[size_t(i) * 4];
+    p[1] = std::clamp(p[1] + fit.y_sign * fit.k * gy[i], 0.0f, 1.0f);
+    p[3] = std::clamp(p[3] + fit.k * gx[i], 0.0f, 1.0f);
+  }
+}
+
+// The execution prompt's trigger button (RT) by content hash: its diffuse,
+// normal and specular maps as seen in game. Only this model is known; another
+// button model (LT, a different size) would need its hashes added here.
+enum class ButtonMap { kNone, kDiffuse, kNormal, kSpecular };
+struct TriggerMap {
+  uint64_t hash;
+  ButtonMap map;
+};
+constexpr TriggerMap kTriggerButtonMaps[] = {
+    {0x6BBDE8FA78C8880Cull, ButtonMap::kDiffuse},
+    {0xCF6492981EE4E327ull, ButtonMap::kNormal},
+    {0x1C593B85D0F8126Dull, ButtonMap::kSpecular},
+};
 
 // The Fury meter bar: "LS RS" (click both sticks) in white under its right end.
 constexpr uint64_t kFuryBarHash = 0x2AAA2B5F56BF031Aull;
@@ -1332,6 +1663,10 @@ struct ButtonGlyphs::Impl {
     bool red_blue_swapped = false;  // the texture stores BGR
     bool sheet = false;
     std::vector<Edit> edits;
+    // A map of the 3D trigger button, and the normal map's engraving fit.
+    ButtonMap map = ButtonMap::kNone;
+    NormalEngraving normal;
+    bool normal_fitted = false;
     dl::RefCntAutoPtr<dl::ITexture> versions[3];  // PS4, PS5, keyboard
     uint32_t keyboard_generation = 0;             // bindings the keyboard version shows
   };
@@ -1339,9 +1674,14 @@ struct ButtonGlyphs::Impl {
   std::unordered_map<uint64_t, bool> checked;
   KeyBindings bindings;
   uint32_t bindings_generation = 1;
+  // The trigger button's letters, measured from its diffuse.
+  std::optional<Engraving> trigger;
 
-  dl::RefCntAutoPtr<dl::ITexture> Upload(const Image& img, uint32_t levels) {
-    // RGBA8 with box-filtered mips (colour weighted by alpha).
+  // alpha_weighted: colour averaged by alpha in the mips (UI art); off for
+  // data in alpha (normal maps).
+  dl::RefCntAutoPtr<dl::ITexture> Upload(const Image& img, uint32_t levels,
+                                         bool alpha_weighted = true) {
+    // RGBA8 with box-filtered mips.
     std::vector<std::vector<uint8_t>> data;
     std::vector<dl::TextureSubResData> subresources;
     Image level = img;
@@ -1360,12 +1700,14 @@ struct ButtonGlyphs::Impl {
               for (int sx = 0; sx < 2; ++sx) {
                 const float* p =
                     level.at(std::min(x * 2 + sx, level.w - 1), std::min(y * 2 + sy, level.h - 1));
-                for (int c = 0; c < 3; ++c) acc[c] += p[c] * p[3];
+                float weight = alpha_weighted ? p[3] : 1.0f;
+                for (int c = 0; c < 3; ++c) acc[c] += p[c] * weight;
                 acc[3] += p[3];
               }
             }
             float* q = next.at(x, y);
-            for (int c = 0; c < 3; ++c) q[c] = acc[3] > 0 ? acc[c] / acc[3] : 0.0f;
+            float total = alpha_weighted ? acc[3] : 4.0f;
+            for (int c = 0; c < 3; ++c) q[c] = total > 0 ? acc[c] / total : 0.0f;
             q[3] = acc[3] / 4.0f;
           }
         }
@@ -1450,6 +1792,31 @@ dl::ITexture* ButtonGlyphs::Replace(uint64_t content_hash,
         e.edits = std::move(edits);
       }
     }
+    // Maps of the execution prompt's trigger button.
+    for (const TriggerMap& t : kTriggerButtonMaps) {
+      if (found || t.hash != content_hash || loaded->width != loaded->height) continue;
+      bool dxt1 = loaded->guest_format == uint32_t(TextureFormat::k_DXT1) ||
+                  loaded->guest_format == uint32_t(TextureFormat::k_DXT1_AS_16_16_16_16);
+      if (!dxt1 && !dxt5) continue;
+      int size = int(loaded->width);
+      Image img =
+          dxt1 ? DecodeBc1(loaded->level0, size, size) : DecodeBc3(loaded->level0, size, size);
+      if (t.map == ButtonMap::kDiffuse) {
+        Engraving engraving;
+        if (!FindEngraving(img, engraving)) {
+          REXLOG_WARN("GLYPHS: trigger button {:016X}: letters not found", content_hash);
+          continue;
+        }
+        m.trigger = std::move(engraving);
+      }
+      found = true;
+      Impl::Entry& e = m.entries[content_hash];
+      e.map = t.map;
+      e.levels = loaded->levels;
+      e.xbox = std::move(img);
+      const char* names[] = {"", "diffuse", "normal", "specular"};
+      REXLOG_INFO("GLYPHS: trigger button {} map {:016X}", names[int(t.map)], content_hash);
+    }
     m.checked[content_hash] = found;
   }
   if (m.style == GlyphStyle::kXbox) return nullptr;
@@ -1462,11 +1829,33 @@ dl::ITexture* ButtonGlyphs::Replace(uint64_t content_hash,
   auto& texture = e.versions[index];
   if (keyboard && texture && e.keyboard_generation != m.bindings_generation) texture.Release();
   if (!texture) {
-    Image img = e.sheet ? (keyboard ? MakeKeyboardSheet(e.xbox, m.bindings)
-                                    : MakePlayStationSheet(e.xbox, m.style))
-                        : ApplyEdits(e.xbox, e.edits, m.style, m.bindings);
+    Image img;
+    if (e.map != ButtonMap::kNone) {
+      // The diffuse defines the letters; until it's loaded the maps stay.
+      if (!m.trigger || m.trigger->w != e.xbox.w || m.trigger->h != e.xbox.h) return nullptr;
+      const Engraving& engraving = *m.trigger;
+      KeyLabel label = keyboard ? ParseBinding(BindingFor(engraving.label, m.bindings))
+                                : KeyLabel{-1, engraving.label};
+      Mask mask = EngravedLabel(engraving, label);
+      img = e.xbox;
+      if (e.map == ButtonMap::kDiffuse) {
+        RelabelDiffuse(img, engraving, mask);
+      } else if (e.map == ButtonMap::kNormal) {
+        if (!e.normal_fitted) {
+          e.normal = FitNormalEngraving(e.xbox, engraving);
+          e.normal_fitted = true;
+        }
+        RelabelNormal(img, engraving, e.normal, mask);
+      } else {
+        CoverLetters(img, engraving);
+      }
+    } else {
+      img = e.sheet ? (keyboard ? MakeKeyboardSheet(e.xbox, m.bindings)
+                                : MakePlayStationSheet(e.xbox, m.style))
+                    : ApplyEdits(e.xbox, e.edits, m.style, m.bindings);
+    }
     if (e.red_blue_swapped) SwapRedBlue(img);
-    texture = m.Upload(img, e.levels);
+    texture = m.Upload(img, e.levels, e.map == ButtonMap::kNone);
     if (keyboard) e.keyboard_generation = m.bindings_generation;
     if (!texture) return nullptr;
   }
