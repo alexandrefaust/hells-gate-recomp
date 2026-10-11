@@ -154,7 +154,7 @@ namespace DantesInferno.Launcher
 
             ControllerFixCheck.IsChecked = _config.InputBackend.Equals("sdl", StringComparison.OrdinalIgnoreCase);
 
-            GlyphFamilyCombo.SelectedIndex = _config.GlyphFamily.Equals("playstation", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+            PopulateGlyphCombo(_config.GlyphFamily);
 
             LoggingEnabledCheck.IsChecked = _config.DetailedLogging;
 
@@ -176,6 +176,23 @@ namespace DantesInferno.Launcher
             ShadowCombo.DisplayMemberPath = "Value";
             ShadowCombo.SelectedValuePath = "Key";
             ShadowCombo.SelectedValue = DisplayOptions.NormalizeShadowScale(selected);
+        }
+
+        private void PopulateGlyphCombo(string selected)
+        {
+            string Lt(string key) => LauncherLocalizer.Get(_launcherLanguage, key);
+            var items = new List<KeyValuePair<string, string>>
+            {
+                new KeyValuePair<string, string>("auto", Lt(LauncherLocalizer.GlyphAuto)),
+                new KeyValuePair<string, string>("xbox360", Lt(LauncherLocalizer.GlyphXbox)),
+                new KeyValuePair<string, string>("playstation4", Lt(LauncherLocalizer.GlyphPlayStation4)),
+                new KeyValuePair<string, string>("playstation5", Lt(LauncherLocalizer.GlyphPlayStation5)),
+                new KeyValuePair<string, string>("keyboard", Lt(LauncherLocalizer.GlyphKeyboard)),
+            };
+            GlyphFamilyCombo.ItemsSource = items;
+            GlyphFamilyCombo.DisplayMemberPath = "Value";
+            GlyphFamilyCombo.SelectedValuePath = "Key";
+            GlyphFamilyCombo.SelectedValue = items.Exists(i => i.Key == selected) ? selected : "auto";
         }
 
         private void PopulateLauncherLanguageCombo()
@@ -293,7 +310,8 @@ namespace DantesInferno.Launcher
             ControllerFixCheck.Content = Lt(LauncherLocalizer.CheckControllerBackend);
             ControllerFixCheck.ToolTip = Lt(LauncherLocalizer.ControllerTooltip);
             LabelButtonGlyphs.Text = Lt(LauncherLocalizer.LabelButtonGlyphs);
-            ComingSoonText.Text = Lt(LauncherLocalizer.ComingSoon);
+            GlyphFamilyCombo.ToolTip = Lt(LauncherLocalizer.GlyphTooltip);
+            PopulateGlyphCombo(GlyphFamilyCombo.SelectedValue as string ?? _config.GlyphFamily);
             LoggingEnabledCheck.Content = Lt(LauncherLocalizer.CheckLogging);
             SettingsAppliedNoteText.Text = Lt(LauncherLocalizer.SettingsAppliedNote);
             ApplyRecommendedButton.Content = Lt(LauncherLocalizer.ResetToRecommended);
@@ -555,7 +573,7 @@ namespace DantesInferno.Launcher
 
             _config.InputBackend = (ControllerFixCheck.IsChecked ?? false) ? "sdl" : "xinput";
 
-            _config.GlyphFamily = GlyphFamilyCombo.SelectedIndex == 1 ? "playstation" : "xbox";
+            _config.GlyphFamily = GlyphFamilyCombo.SelectedValue as string ?? "auto";
 
             _config.DetailedLogging = LoggingEnabledCheck.IsChecked ?? false;
 

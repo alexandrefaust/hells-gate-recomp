@@ -337,8 +337,7 @@ namespace DantesInferno
             args.Add(config.DetailedLogging ? "--log_level=debug" : "--log_level=info");
             args.Add("--log_flush_interval=2");
 
-            if (config.GlyphFamily.Equals("playstation", StringComparison.OrdinalIgnoreCase))
-                args.Add("--glyph_family=playstation");
+            args.Add("--glyph_family=" + config.GlyphFamily);
 
             if (config.UserLanguage != 1)
                 args.Add(string.Format(CultureInfo.InvariantCulture, "--user_language={0}", config.UserLanguage));

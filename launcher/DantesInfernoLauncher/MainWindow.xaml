@@ -277,11 +277,7 @@
                                             <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
                                         <TextBlock x:Name="LabelButtonGlyphs" Grid.Column="0" Text="Button glyphs:" VerticalAlignment="Center" Margin="0,0,8,0" />
-                                        <ComboBox x:Name="GlyphFamilyCombo" Grid.Column="1" SelectedIndex="0" IsEnabled="False" ToolTip="Coming soon">
-                                            <ComboBoxItem Content="Xbox 360" />
-                                            <ComboBoxItem Content="PlayStation" />
-                                        </ComboBox>
-                                        <TextBlock x:Name="ComingSoonText" Grid.Column="2" Text="Coming soon" FontSize="11" FontStyle="Italic" Opacity="0.5" VerticalAlignment="Center" Margin="8,0,0,0" />
+                                        <ComboBox x:Name="GlyphFamilyCombo" Grid.Column="1" />
                                     </Grid>
 
                                     <CheckBox x:Name="LoggingEnabledCheck" Content="Detailed logging (troubleshooting; larger log files)" IsChecked="False" Margin="0,3" />

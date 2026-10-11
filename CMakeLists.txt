@@ -101,6 +101,7 @@ if(DANTESINFERNO_NATIVE_RENDERER)
         src/native_renderer/dante_device.cpp
         src/native_renderer/dante_draws.cpp
         src/native_renderer/dante_dump.cpp
+        src/native_renderer/dante_glyphs.cpp
         src/native_renderer/dante_shaders.cpp
         src/native_renderer/dante_smaa.cpp
         src/native_renderer/dante_textures.cpp
@@ -196,6 +197,8 @@ if(DANTESINFERNO_NATIVE_RENDERER)
             OGLCompiler
         )
         target_link_libraries(dante_native_renderer PRIVATE dante_gpu)
+        # GDI renders the button glyph labels (dante_glyphs.cpp).
+        target_link_libraries(dante_native_renderer PRIVATE gdi32)
 
         # glslang for runtime HLSL->SPIR-V compilation in native_device.cpp
         # (DiligentCore is built with DILIGENT_NO_GLSLANG). ResourceLimits.cpp

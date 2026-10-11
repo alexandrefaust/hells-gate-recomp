@@ -2,6 +2,7 @@
 
 #include "dante_draws.h"
 #include "dante_dump.h"
+#include "dante_glyphs.h"
 #include "dante_shaders.h"
 #include "dante_smaa.h"
 #include "dante_stats.h"
@@ -301,6 +302,9 @@ std::unique_ptr<ShaderCache> g_shaders;
 std::unique_ptr<TextureCache> g_texture_cache;
 std::unique_ptr<DrawRenderer> g_draws;
 std::unique_ptr<SmaaPass> g_smaa;
+std::unique_ptr<ButtonGlyphs> g_glyphs;
+std::function<int()> g_glyph_style_source;
+std::function<KeyBindings()> g_glyph_bindings_source;
 std::unique_ptr<rex::graphics::RegisterFile> g_regs;
 uint32_t g_draws_without_shaders = 0;
 uint32_t g_draws_unparsed = 0;
@@ -1212,6 +1216,10 @@ bool StartDanteDevice(rex::ui::Window* window) {
   g_draws = std::make_unique<DrawRenderer>(g_device->renderDevice(), g_device->immediateContext(),
                                            g_texture_cache.get());
   g_smaa = std::make_unique<SmaaPass>(g_device.get());
+  g_glyphs = std::make_unique<ButtonGlyphs>(g_device->renderDevice());
+  g_texture_cache->SetReplacer([](uint64_t hash, const TextureCache::LoadedTexture* loaded) {
+    return g_glyphs ? g_glyphs->Replace(hash, loaded) : nullptr;
+  });
   g_regs = std::make_unique<rex::graphics::RegisterFile>();
   g_frame = 0;
   REXLOG_INFO("DanteDevice: presenting on the game window (SDK presenter detached)");
@@ -1233,6 +1241,7 @@ void StopDanteDevice() {
   g_last_ps = {};
   g_smaa.reset();
   g_draws.reset();
+  g_glyphs.reset();
   g_texture_cache.reset();
   g_shaders.reset();
   g_device->shutdown();
@@ -1482,6 +1491,16 @@ void DanteOnEndVertices(const uint8_t* base) {
   SubmitDraw(g_inline.args.r[0], initiator, 0, 0, &g_inline, base);
 }
 
+void SetButtonGlyphStyleSource(std::function<int()> source) {
+  std::lock_guard lock(g_mutex);
+  g_glyph_style_source = std::move(source);
+}
+
+void SetButtonGlyphBindingsSource(std::function<KeyBindings()> source) {
+  std::lock_guard lock(g_mutex);
+  g_glyph_bindings_source = std::move(source);
+}
+
 // Swap(pFrontBuffer, ...): present the native texture resolved to the front buffer.
 void DanteOnSwap(const CallArgs& a, const uint8_t* base, bool log_next_frame) {
   std::lock_guard lock(g_mutex);
@@ -1576,6 +1595,13 @@ void DanteOnSwap(const CallArgs& a, const uint8_t* base, bool log_next_frame) {
     ReplayDump();
   }
   PerfOnSwap(g_swap_draws, g_swap_resolves);
+  if (g_glyphs && g_glyph_style_source) {
+    auto style = GlyphStyle(std::clamp(g_glyph_style_source(), 0, 3));
+    if (style == GlyphStyle::kKeyboard && g_glyph_bindings_source) {
+      g_glyphs->SetBindings(g_glyph_bindings_source());
+    }
+    g_glyphs->SetStyle(style);
+  }
   g_swap_draws = g_swap_resolves = g_swap_dest_info_missing = g_swap_new_targets = 0;
   if (g_dump_frame && found) {
     DumpTexturePng(g_device->renderDevice(), g_device->immediateContext(), it->second.texture,

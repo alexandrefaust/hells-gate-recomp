@@ -260,6 +260,14 @@ namespace DantesInferno
                 if (Remove(key))
                     changed = true;
             }
+            // The button glyph option was disabled until 0.9 and saved "xbox" or
+            // "playstation" without a choice; both now mean automatic.
+            string glyphs = this["glyph_family"];
+            if (glyphs == "xbox" || glyphs == "playstation")
+            {
+                Remove("glyph_family");
+                changed = true;
+            }
             return changed;
         }
     }

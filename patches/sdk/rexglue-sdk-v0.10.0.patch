@@ -3732,7 +3732,7 @@ index 91ac08f..79a787f 100644
  }
  
 diff --git a/src/input/mnk/mnk_input_driver.cpp b/src/input/mnk/mnk_input_driver.cpp
-index 3f9422d..f5a2e7d 100644
+index 3f9422d..2c5fcc5 100644
 --- a/src/input/mnk/mnk_input_driver.cpp
 +++ b/src/input/mnk/mnk_input_driver.cpp
 @@ -65,12 +65,9 @@ namespace {
@@ -3775,7 +3775,15 @@ index 3f9422d..f5a2e7d 100644
    uint16_t idx = static_cast<uint16_t>(vk);
    return idx < 256 && key_down[idx];
  }
-@@ -510,6 +514,12 @@ void MnkInputDriver::OnMouseDown(rex::ui::MouseEvent& e) {
+@@ -228,6 +232,7 @@ void MnkInputDriver::EnumerateDevices(std::vector<DeviceInfo>& out) {
+   info.id = kMnkDevice;
+   info.name = "Keyboard and Mouse";
+   info.synthetic = true;
++  info.labels = ButtonLabels::kKeyboard;
+   out.push_back(info);
+ }
+ 
+@@ -510,6 +515,12 @@ void MnkInputDriver::OnMouseDown(rex::ui::MouseEvent& e) {
      case rex::ui::MouseEvent::Button::kMiddle:
        SetKeyState(static_cast<uint16_t>(VirtualKey::kMButton), true);
        break;
@@ -3788,7 +3796,7 @@ index 3f9422d..f5a2e7d 100644
      default:
        break;
    }
-@@ -529,6 +539,12 @@ void MnkInputDriver::OnMouseUp(rex::ui::MouseEvent& e) {
+@@ -529,6 +540,12 @@ void MnkInputDriver::OnMouseUp(rex::ui::MouseEvent& e) {
      case rex::ui::MouseEvent::Button::kMiddle:
        SetKeyState(static_cast<uint16_t>(VirtualKey::kMButton), false);
        break;
@@ -4847,3 +4855,110 @@ index 1774f97..0f05a83 100644
      }
      param_gen_y = builder_->createUnaryBuiltinCall(type_float_, ext_inst_glsl_std_450_,
                                                     GLSLstd450FAbs, param_gen_y);
+diff --git a/include/rex/input/device.h b/include/rex/input/device.h
+index 7b67ceb..4438ba2 100644
+--- a/include/rex/input/device.h
++++ b/include/rex/input/device.h
+@@ -22,12 +22,16 @@ constexpr uint32_t kMaxGuestUsers = 4;
+ /// device took the freed slot.
+ enum class DeviceId : uint64_t { kInvalid = 0 };
+ 
++/// The button labels printed on a device, for matching in-game button prompts.
++enum class ButtonLabels : uint8_t { kXbox, kPlayStation4, kPlayStation5, kKeyboard };
++
+ struct DeviceInfo {
+   DeviceId id = DeviceId::kInvalid;
+   uint32_t ordinal = 0;  // connection order, assigned by InputSystem
+   std::string name;
+   std::string guid;
+   bool synthetic = false;  // keyboard/mouse emulation or the NOP stand-in
++  ButtonLabels labels = ButtonLabels::kXbox;
+ };
+ 
+ }  // namespace rex::input
+diff --git a/include/rex/input/input_system.h b/include/rex/input/input_system.h
+index 1cb3faa..9e84f4d 100644
+--- a/include/rex/input/input_system.h
++++ b/include/rex/input/input_system.h
+@@ -10,6 +10,8 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <array>
++#include <atomic>
+ #include <memory>
+ #include <vector>
+ 
+@@ -47,6 +49,10 @@ class InputSystem : public system::IInputSystem {
+   X_RESULT SetState(uint32_t user_index, X_INPUT_VIBRATION* vibration);
+   X_RESULT GetKeystroke(uint32_t user_index, uint32_t flags, X_INPUT_KEYSTROKE* out_keystroke);
+ 
++  /// Button labels of the device the user most recently used (kXbox before
++  /// any input). Safe from any thread.
++  ButtonLabels ActiveButtonLabels(uint32_t user_index) const;
++
+  private:
+   /// Re-enumerates every driver and notifies the assignment when the set
+   /// changed.
+@@ -60,6 +66,7 @@ class InputSystem : public system::IInputSystem {
+ 
+   std::unique_ptr<DeviceAssignment> assignment_;
+   ActiveDeviceTracker active_devices_;
++  std::array<std::atomic<ButtonLabels>, kMaxGuestUsers> active_labels_ = {};
+ 
+   // Ordered by ordinal. Ordinals are never recycled, so unplugging pad one
+   // does not renumber pad two.
+diff --git a/src/input/input_system.cpp b/src/input/input_system.cpp
+index 813bb1c..6b78b86 100644
+--- a/src/input/input_system.cpp
++++ b/src/input/input_system.cpp
+@@ -242,6 +242,12 @@ X_RESULT InputSystem::GetState(uint32_t user_index, X_INPUT_STATE* out_state) {
+     }
+   }
+ 
++  if (user_index < kMaxGuestUsers) {
++    if (const DeviceInfo* info = DeviceInfoFor(active_devices_.Active(user_index))) {
++      active_labels_[user_index].store(info->labels, std::memory_order_relaxed);
++    }
++  }
++
+   if (!any) {
+     return X_ERROR_DEVICE_NOT_CONNECTED;
+   }
+@@ -251,6 +257,13 @@ X_RESULT InputSystem::GetState(uint32_t user_index, X_INPUT_STATE* out_state) {
+   return X_ERROR_SUCCESS;
+ }
+ 
++ButtonLabels InputSystem::ActiveButtonLabels(uint32_t user_index) const {
++  if (user_index >= kMaxGuestUsers) {
++    return ButtonLabels::kXbox;
++  }
++  return active_labels_[user_index].load(std::memory_order_relaxed);
++}
++
+ X_RESULT InputSystem::SetState(uint32_t user_index, X_INPUT_VIBRATION* vibration) {
+   SCOPE_profile_cpu_f("hid");
+   if (!assignment_) {
+diff --git a/src/input/sdl/sdl_input_driver.cpp b/src/input/sdl/sdl_input_driver.cpp
+index c7c440d..b06d057 100644
+--- a/src/input/sdl/sdl_input_driver.cpp
++++ b/src/input/sdl/sdl_input_driver.cpp
+@@ -162,6 +162,18 @@ void SDLInputDriver::EnumerateDevices(std::vector<DeviceInfo>& out) {
+                      static_cast<int>(sizeof(guid_text)));
+     info.guid = guid_text;
+     info.synthetic = false;
++    switch (SDL_GetGamepadType(controller.sdl)) {
++      case SDL_GAMEPAD_TYPE_PS3:
++      case SDL_GAMEPAD_TYPE_PS4:
++        info.labels = ButtonLabels::kPlayStation4;
++        break;
++      case SDL_GAMEPAD_TYPE_PS5:
++        info.labels = ButtonLabels::kPlayStation5;
++        break;
++      default:
++        info.labels = ButtonLabels::kXbox;
++        break;
++    }
+     out.push_back(info);
+   }
+ }

@@ -185,6 +185,7 @@ struct TextureCache::Impl {
   dl::IRenderDevice* device;
   dl::IDeviceContext* context;
   ResolveLookup resolve_lookup;
+  Replacer replacer;
   // Key: XXH3 of the fetch dwords identifying the texture data.
   std::unordered_map<uint64_t, GuestTextureEntry> textures;
   std::unordered_map<uint64_t, dl::RefCntAutoPtr<dl::ITextureView>> views;
@@ -368,6 +369,8 @@ TextureCache::TextureCache(dl::IRenderDevice* device, dl::IDeviceContext* contex
 
 TextureCache::~TextureCache() = default;
 
+void TextureCache::SetReplacer(Replacer replacer) { impl_->replacer = std::move(replacer); }
+
 dl::ITextureView* TextureCache::GetView2D(const uint32_t fetch_dwords[6], const uint8_t* base,
                                           uint64_t frame, char* source, bool is_signed) {
   Impl& m = *impl_;
@@ -433,7 +436,15 @@ dl::ITextureView* TextureCache::GetView2D(const uint32_t fetch_dwords[6], const 
     return nullptr;
   }
   dl::TEXTURE_FORMAT view_format = is_signed ? host.snorm : host.format;
-  if (entry.texture && entry.checked_frame == frame) return m.View(entry.texture, swizzle, dl::RESOURCE_DIM_TEX_2D_ARRAY, view_format);
+  auto view = [&](const LoadedTexture* loaded) {
+    if (m.replacer && !is_signed) {
+      if (dl::ITexture* replacement = m.replacer(entry.content_hash, loaded)) {
+        return m.View(replacement, swizzle, dl::RESOURCE_DIM_TEX_2D_ARRAY);
+      }
+    }
+    return m.View(entry.texture, swizzle, dl::RESOURCE_DIM_TEX_2D_ARRAY, view_format);
+  };
+  if (entry.texture && entry.checked_frame == frame) return view(nullptr);
   entry.checked_frame = frame;
   Impl::LoadedLevels levels;
   uint64_t hash = 0;
@@ -441,14 +452,18 @@ dl::ITextureView* TextureCache::GetView2D(const uint32_t fetch_dwords[6], const 
     m.textures.erase(key);
     return nullptr;
   }
-  if (entry.texture && entry.content_hash == hash) return m.View(entry.texture, swizzle, dl::RESOURCE_DIM_TEX_2D_ARRAY, view_format);
+  if (entry.texture && entry.content_hash == hash) return view(nullptr);
   entry.content_hash = hash;
   m.LoadLevels(fetch, host, base, levels, hash);
   if (!m.StoreLevels(entry, levels, host, dl::RESOURCE_DIM_TEX_2D_ARRAY, "GuestTexture")) {
     m.textures.erase(key);
     return nullptr;
   }
-  return m.View(entry.texture, swizzle, dl::RESOURCE_DIM_TEX_2D_ARRAY, view_format);
+  LoadedTexture loaded{levels.width, levels.height, uint32_t(info.format), levels.levels,
+                       levels.subresources.empty()
+                           ? nullptr
+                           : static_cast<const uint8_t*>(levels.subresources[0].pData)};
+  return view(&loaded);
 }
 
 dl::ITextureView* TextureCache::GetViewCube(const uint32_t fetch_dwords[6], const uint8_t* base,

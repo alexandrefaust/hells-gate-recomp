@@ -26,9 +26,22 @@ class TextureCache {
       std::function<Diligent::ITexture*(uint32_t address, uint32_t width, uint32_t height,
                                         uint32_t guest_format, bool& rb_swap)>;
 
+  // A guest texture just loaded: level 0 of slice 0 in host block layout.
+  struct LoadedTexture {
+    uint32_t width = 0, height = 0, guest_format = 0, levels = 1;
+    const uint8_t* level0 = nullptr;
+  };
+  // Substitution for uploaded 2D textures, asked on every bind with the
+  // texture's content hash (loaded: non-null right after an upload). Returns
+  // the texture to bind instead (a 2D array of one slice), or null.
+  using Replacer =
+      std::function<Diligent::ITexture*(uint64_t content_hash, const LoadedTexture* loaded)>;
+
   TextureCache(Diligent::IRenderDevice* device, Diligent::IDeviceContext* context,
                ResolveLookup resolve_lookup);
   ~TextureCache();
+
+  void SetReplacer(Replacer replacer);
 
   // fetch: the 6 fetch constant dwords. Returns a 2D-array view (with the
   // fetch swizzle) or null when unsupported (the caller binds a dummy).

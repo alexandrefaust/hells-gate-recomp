@@ -4,7 +4,10 @@
 
 #pragma once
 
+#include "dante_glyphs.h"
+
 #include <cstdint>
+#include <functional>
 
 namespace rex::ui {
 class Window;
@@ -55,6 +58,11 @@ uint32_t DanteRingKickCount();
 void DanteShaderHashes(uint32_t device, const uint8_t* base, uint64_t& vs, uint64_t& ps);
 // Diagnostics: index buffer of the last submitted draw (guest physical, 0 = not indexed).
 void DanteLastIndexBuffer(uint32_t& base, uint32_t& count, uint32_t& format);
+// Button glyph style source, asked once per frame: 0 = Xbox, 1 = PlayStation 4,
+// 2 = PlayStation 5, 3 = keyboard / mouse (see GlyphStyle).
+void SetButtonGlyphStyleSource(std::function<int()> source);
+// Keyboard / mouse bindings, asked once per frame while the keyboard style shows.
+void SetButtonGlyphBindingsSource(std::function<KeyBindings()> source);
 // log_next_frame: write the next frame's events as NATIVE-RT lines.
 void DanteOnSwap(const CallArgs& args, const uint8_t* base, bool log_next_frame);
 

@@ -5,6 +5,7 @@
 #include <rex/chrono/clock.h>
 #include <rex/filesystem.h>
 #include <rex/input/flags.h>
+#include <rex/input/input_system.h>
 #include <rex/ui/keybinds.h>
 #include <rex/ui/imgui_dialog.h>
 #include <rex/graphics/command_processor.h>
@@ -36,7 +37,8 @@ REXCVAR_DEFINE_BOOL(show_fps_overlay, false, "UI",
                     "Show FPS and frametime overlay (top-left corner)");
 
 REXCVAR_DEFINE_STRING(glyph_family, "auto", "UI",
-                      "Button glyph family: auto, xbox, or playstation");
+                      "Button glyphs: auto (follow the controller in use), xbox360, playstation4, "
+                      "playstation5 or keyboard");
 
 REXCVAR_DEFINE_DOUBLE(ultrawide_target_aspect, 0.0, "Graphics",
                       "Target aspect ratio for ultrawide (0=disabled, 1.7778=16:9, "
@@ -262,6 +264,50 @@ class DantesInfernoApp : public rex::ReXApp {
       native::StartDanteDevice(window());
       // renderer=dante sets the aspect from a resolution wider than 16:9.
       g_ultrawide_target_aspect = static_cast<float>(REXCVAR_GET(ultrawide_target_aspect));
+      // Button glyphs follow the controller in use, unless glyph_family forces a set.
+      auto* input = dynamic_cast<rex::input::InputSystem*>(runtime()->input_system());
+      native::SetButtonGlyphStyleSource([input] {
+        std::string family = REXCVAR_GET(glyph_family);
+        if (family == "xbox360") return 0;
+        if (family == "playstation4") return 1;
+        if (family == "playstation5") return 2;
+        if (family == "keyboard") return 3;
+        if (!input) return 0;
+        switch (input->ActiveButtonLabels(0)) {
+          case rex::input::ButtonLabels::kPlayStation4: return 1;
+          case rex::input::ButtonLabels::kPlayStation5: return 2;
+          case rex::input::ButtonLabels::kKeyboard: return 3;
+          default: return 0;
+        }
+      });
+      // Keyboard glyphs show the live keybinds (the launcher and the settings
+      // overlay can change them).
+      native::SetButtonGlyphBindingsSource([] {
+        auto bind = [](const char* name) { return rex::cvar::Query<std::string>(name); };
+        native::KeyBindings k;
+        k.a = bind("keybind_a");
+        k.b = bind("keybind_b");
+        k.x = bind("keybind_x");
+        k.y = bind("keybind_y");
+        k.left_shoulder = bind("keybind_left_shoulder");
+        k.right_shoulder = bind("keybind_right_shoulder");
+        k.left_trigger = bind("keybind_left_trigger");
+        k.right_trigger = bind("keybind_right_trigger");
+        k.back = bind("keybind_back");
+        k.start = bind("keybind_start");
+        k.lstick_up = bind("keybind_lstick_up");
+        k.lstick_down = bind("keybind_lstick_down");
+        k.lstick_left = bind("keybind_lstick_left");
+        k.lstick_right = bind("keybind_lstick_right");
+        k.lstick_press = bind("keybind_lstick_press");
+        k.rstick_up = bind("keybind_rstick_up");
+        k.rstick_down = bind("keybind_rstick_down");
+        k.rstick_left = bind("keybind_rstick_left");
+        k.rstick_right = bind("keybind_rstick_right");
+        k.rstick_press = bind("keybind_rstick_press");
+        k.mouse_look = rex::cvar::Query<bool>("mnk_mouse");
+        return k;
+      });
     }
     rex::chrono::Clock::set_guest_time_scalar(REXCVAR_GET(time_scalar));
 
