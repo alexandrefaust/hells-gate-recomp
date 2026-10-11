@@ -121,3 +121,6 @@ docs/NATIVE_PORT_PROGRESS.md
 
 # --- Agent docs (local only) ---
 AGENTS.md
+
+# FidelityFX SDK build output (Linux builds write it into the repo root)
+/bin/ffx_sdk/

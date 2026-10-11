@@ -128,6 +128,9 @@ git clone --depth 1 --recurse-submodules https://github.com/DiligentGraphics/Dil
 pwsh ./setup.ps1   # clones ReXGlue SDK v0.10.0 and applies the patches in patches/
 ```
 
+On Linux, `./setup.sh` does the same without PowerShell and also clones
+DiligentCore.
+
 ### Windows
 
 ```powershell
@@ -226,6 +229,40 @@ The executable is `out/build/linux-release/dantes_inferno`.
 
 ```bash
 ./scripts/dantes_inferno_exe.sh
+```
+
+</details>
+
+### Linux (openSUSE Tumbleweed)
+
+<details>
+<summary>Differences from the Ubuntu steps</summary>
+
+Steps 1 to 4 were tested on Tumbleweed with Clang 23; steps 5 to 9 need
+`game/default.xex` and are not yet tested on openSUSE. Clone the repository
+to a path with no apostrophe (`'`) in it: parts of the build pass the path to
+the shell unquoted.
+
+**1. Install dependencies** (also installs `shaderc` and `wine`, which
+FidelityFX needs to generate its shader permutations):
+
+```bash
+cp dantes_inferno_manifest.toml dantes_inferno_manifest.toml.back
+./scripts/install_opensuse.sh
+```
+
+**2. Set up the SDK** without PowerShell. `setup.sh` does what `setup.ps1`
+does and also clones DiligentCore and applies its patch:
+
+```bash
+./setup.sh
+```
+
+**3 to 9.** Follow the Ubuntu steps, but use the system Clang in `CONFIGURE`:
+
+```bash
+  -DCMAKE_C_COMPILER=clang
+  -DCMAKE_CXX_COMPILER=clang++
 ```
 
 </details>
