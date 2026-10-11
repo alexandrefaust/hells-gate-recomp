@@ -3,6 +3,7 @@
 #include "Graphics/GraphicsEngine/interface/GraphicsTypes.h"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 
 namespace Diligent {
@@ -10,6 +11,7 @@ struct IRenderDevice;
 struct IDeviceContext;
 struct ITextureView;
 struct IPipelineState;
+struct IShader;
 }  // namespace Diligent
 
 namespace renderer {
@@ -42,6 +44,14 @@ class VulkanDevice {
   Diligent::IPipelineState* CreateFullscreenPipeline(const char* name, const char* pixel_source,
                                                      Diligent::TEXTURE_FORMAT format,
                                                      bool scissor = false);
+
+  // GLSL compiled to SPIR-V; the caller owns the returned reference.
+  Diligent::IShader* CompileShader(const char* source, Diligent::SHADER_TYPE type,
+                                   const char* name);
+
+  // Called with the back buffer after the frame is drawn, before it is
+  // presented (overlays).
+  void SetBeforePresent(std::function<void(Diligent::ITextureView* back_buffer)> callback);
 
   Diligent::IRenderDevice* RenderDevice() const;
   Diligent::IDeviceContext* Context() const;

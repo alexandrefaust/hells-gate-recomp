@@ -9,6 +9,7 @@
 #include "smaa_pass.h"
 #include "swizzle.h"
 #include "texture_cache.h"
+#include "ui_overlay.h"
 #include "vulkan_device.h"
 
 #include "Common/interface/RefCntAutoPtr.hpp"
@@ -303,6 +304,9 @@ std::unique_ptr<ShaderCache> g_shader_cache;
 std::unique_ptr<TextureCache> g_texture_cache;
 std::unique_ptr<DrawRenderer> g_draw_renderer;
 std::unique_ptr<SmaaPass> g_smaa;
+std::unique_ptr<OverlayRenderer> g_overlay;
+std::mutex g_present_mutex;
+PresentCount g_present_count;
 std::unique_ptr<ButtonGlyphs> g_button_glyphs;
 std::function<GlyphStyle()> g_glyph_style_source;
 std::function<KeyBindings()> g_glyph_bindings_source;
@@ -1240,6 +1244,9 @@ bool Start(rex::ui::Window* window) {
   g_draw_renderer = std::make_unique<DrawRenderer>(g_device->RenderDevice(), g_device->Context(),
                                                    g_texture_cache.get());
   g_smaa = std::make_unique<SmaaPass>(g_device.get());
+  g_overlay = std::make_unique<OverlayRenderer>(g_device.get());
+  g_device->SetBeforePresent(
+      [](dl::ITextureView* back_buffer) { g_overlay->Draw(g_device->Context(), back_buffer); });
   g_button_glyphs = std::make_unique<ButtonGlyphs>(g_device->RenderDevice());
   g_texture_cache->SetReplacer([](uint64_t hash, const TextureCache::LoadedTexture* loaded) {
     return g_button_glyphs ? g_button_glyphs->Replace(hash, loaded) : nullptr;
@@ -1265,6 +1272,8 @@ void Stop() {
   g_loaded_vs = {};
   g_last_ps = {};
   g_smaa.reset();
+  g_device->SetBeforePresent(nullptr);
+  g_overlay.reset();
   g_draw_renderer.reset();
   g_button_glyphs.reset();
   g_texture_cache.reset();
@@ -1676,6 +1685,17 @@ void AfterSwap(const CallArgs& a, const uint8_t* base, bool log_next_frame) {
   } else {
     PresentTestPattern();
   }
+  {
+    std::lock_guard present_lock(g_present_mutex);
+    ++g_present_count.frames;
+    g_present_count.last = std::chrono::steady_clock::now();
+  }
+  RequestOverlayFrame();
+}
+
+PresentCount PresentedFrames() {
+  std::lock_guard lock(g_present_mutex);
+  return g_present_count;
 }
 
 }  // namespace renderer

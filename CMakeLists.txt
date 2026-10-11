@@ -37,6 +37,10 @@ endif()
 set(DANTESINFERNO_SOURCES
     src/main.cpp
     src/frame_rate_hooks.cpp
+    src/overlay/achievement_sound.cpp
+    src/overlay/achievement_ui.cpp
+    src/overlay/fps_overlay.cpp
+    src/overlay/overlay_style.cpp
     # D3D hooks: strong overrides of the generated weak aliases, so in the exe.
     src/renderer/d3d_hooks.cpp
     src/renderer/renderdoc_capture.cpp
@@ -60,11 +64,8 @@ target_include_directories(dantes_inferno PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/rexglue-sdk/thirdparty/imgui"
 )
 
-if(TARGET imgui::imgui)
-    target_link_libraries(dantes_inferno PRIVATE imgui::imgui)
-elseif(TARGET imgui)
-    target_link_libraries(dantes_inferno PRIVATE imgui)
-endif()
+# Headers only: ImGui is compiled into rexruntime.dll (all symbols exported),
+# and a second static copy here would have its own, never-created context.
 
 if(DANTESINFERNO_NATIVE_RENDERER)
     # Resolve relative/stale cache values against the source tree so a bad
@@ -106,6 +107,7 @@ if(DANTESINFERNO_NATIVE_RENDERER)
         src/renderer/smaa_pass.cpp
         src/renderer/texture_cache.cpp
         src/renderer/renderer_config.cpp
+        src/renderer/ui_overlay.cpp
         src/renderer/vulkan_device.cpp
     )
     target_include_directories(dante_renderer PUBLIC

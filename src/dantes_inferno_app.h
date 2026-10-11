@@ -1,7 +1,12 @@
 #pragma once
 
+#include "overlay/achievement_sound.h"
+#include "overlay/achievement_ui.h"
+#include "overlay/fps_overlay.h"
+#include "overlay/overlay_style.h"
 #include "renderer/renderer.h"
 #include "renderer/renderer_config.h"
+#include "renderer/ui_overlay.h"
 #include "session_info.h"
 
 #include <rex/chrono/clock.h>
@@ -19,7 +24,7 @@
 #include <rex/ui/imgui_dialog.h>
 #include <rex/ui/keybinds.h>
 
-#include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -35,6 +40,9 @@ REXCVAR_DEFINE_DOUBLE(time_scalar, 1.0, "Gameplay",
 
 REXCVAR_DEFINE_BOOL(show_fps_overlay, false, "UI",
                     "Show FPS and frametime overlay (top-left corner)");
+
+REXCVAR_DEFINE_BOOL(achievement_preview, false, "UI",
+                    "Show the first achievement's notification once (tests the toast and sound)");
 
 REXCVAR_DEFINE_STRING(glyph_family, "auto", "UI",
                       "Button glyphs: auto (follow the controller in use), xbox360, playstation4, "
@@ -55,104 +63,6 @@ REXCVAR_DEFINE_BOOL(dlc_dump_image, false, "Diagnostics",
 REXCVAR_DEFINE_STRING(dlc_source_path, "dlc", "Content",
                       "Folder scanned for DLC packages to auto-install on launch. "
                       "If empty or missing, the game runs without DLC.");
-
-class FpsOverlayDialog : public rex::ui::ImGuiDialog {
- public:
-  explicit FpsOverlayDialog(rex::ui::ImGuiDrawer* drawer,
-                            rex::graphics::CommandProcessor* command_processor)
-      : rex::ui::ImGuiDialog(drawer),
-        command_processor_(command_processor),
-        window_start_(std::chrono::steady_clock::now()),
-        last_guest_frame_count_(command_processor ? command_processor->swap_counter() : 0),
-        last_vblank_count_(command_processor ? command_processor->vblank_counter() : 0) {}
-
- protected:
-  void OnDraw(ImGuiIO& io) override {
-    auto now = std::chrono::steady_clock::now();
-
-    uint64_t current_guest_frames = command_processor_ ? command_processor_->swap_counter() : 0;
-    uint64_t current_vblanks = command_processor_ ? command_processor_->vblank_counter() : 0;
-    window_frames_ += current_guest_frames - last_guest_frame_count_;
-    window_vblanks_ += current_vblanks - last_vblank_count_;
-    last_guest_frame_count_ = current_guest_frames;
-    last_vblank_count_ = current_vblanks;
-
-    double window_ms = std::chrono::duration<double, std::milli>(now - window_start_).count();
-    if (window_ms >= kWindowMs) {
-      double guest_fps = window_frames_ * 1000.0 / window_ms;
-      double guest_ft_ms = window_frames_ ? window_ms / window_frames_ : 0.0;
-      double vblank_hz = window_vblanks_ * 1000.0 / window_ms;
-
-      if (smoothed_fps_ == 0.0) {
-        smoothed_fps_ = guest_fps;
-        smoothed_ft_ = guest_ft_ms;
-        smoothed_vblank_hz_ = vblank_hz;
-      } else {
-        smoothed_fps_ = smoothed_fps_ * 0.5 + guest_fps * 0.5;
-        smoothed_ft_ = smoothed_ft_ * 0.5 + guest_ft_ms * 0.5;
-        smoothed_vblank_hz_ = smoothed_vblank_hz_ * 0.5 + vblank_hz * 0.5;
-      }
-
-      frame_history_[history_idx_] = static_cast<float>(guest_ft_ms);
-      history_idx_ = (history_idx_ + 1) % kHistorySize;
-
-      window_frames_ = 0;
-      window_vblanks_ = 0;
-      window_start_ = now;
-    }
-
-    ImGui::SetNextWindowPos(ImVec2(8, 8), ImGuiCond_Always);
-    ImGui::SetNextWindowBgAlpha(0.65f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 8));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 4.0f);
-
-    bool visible = true;
-    if (ImGui::Begin("##fps_overlay", &visible,
-                     ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
-                         ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
-                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize |
-                         ImGuiWindowFlags_NoFocusOnAppearing)) {
-      ImGui::SetWindowFontScale(2.0f);
-      ImU32 fps_color = smoothed_fps_ >= 55.0f   ? IM_COL32(80, 255, 80, 255)
-                        : smoothed_fps_ >= 30.0f ? IM_COL32(255, 220, 60, 255)
-                                                 : IM_COL32(255, 80, 80, 255);
-      ImGui::PushStyleColor(ImGuiCol_Text, fps_color);
-      ImGui::Text("%.0f FPS", smoothed_fps_);
-      ImGui::PopStyleColor();
-      ImGui::SetWindowFontScale(1.0f);
-
-      ImGui::SetWindowFontScale(1.3f);
-      ImGui::Text("%.1f ms", smoothed_ft_);
-      ImGui::SetWindowFontScale(1.0f);
-
-      ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(160, 160, 160, 255));
-      ImGui::Text("vblank %.0f Hz", smoothed_vblank_hz_);
-      ImGui::PopStyleColor();
-
-      ImGui::Spacing();
-      ImGui::PlotLines("##frametime", frame_history_.data(), static_cast<int>(kHistorySize),
-                       static_cast<int>(history_idx_), nullptr, 0.0f, 50.0f, ImVec2(220, 50));
-    }
-    ImGui::End();
-    ImGui::PopStyleVar(2);
-  }
-
- private:
-  static constexpr size_t kHistorySize = 120;
-  static constexpr double kWindowMs = 250.0;
-  std::array<float, kHistorySize> frame_history_{};
-  size_t history_idx_ = 0;
-  rex::graphics::CommandProcessor* command_processor_;
-  std::chrono::steady_clock::time_point window_start_;
-  uint64_t last_guest_frame_count_;
-  uint64_t last_vblank_count_;
-  uint64_t window_frames_ = 0;
-  uint64_t window_vblanks_ = 0;
-  double smoothed_fps_ = 0.0;
-  double smoothed_ft_ = 0.0;
-  double smoothed_vblank_hz_ = 0.0;
-};
 
 class DantesInfernoApp : public rex::ReXApp {
  public:
@@ -177,6 +87,23 @@ class DantesInfernoApp : public rex::ReXApp {
         return;
       }
     }
+  }
+
+  void OnConfigureFonts(ImFontAtlas* atlas) override { overlay::LoadFonts(atlas, window()); }
+
+  std::unique_ptr<rex::ui::ImGuiDialog> CreateAchievementsOverlay() override {
+    if (!runtime() || !runtime()->kernel_state() || !imgui_drawer()) return nullptr;
+    return std::make_unique<overlay::AchievementList>(imgui_drawer(), IconDrawer(), runtime(),
+                                                      &achievements());
+  }
+
+  std::unique_ptr<rex::ui::AchievementNotificationDialog> CreateAchievementNotificationDialog()
+      override {
+    if (!imgui_drawer() || !runtime()) return nullptr;
+    auto toast =
+        std::make_unique<overlay::AchievementToast>(imgui_drawer(), IconDrawer(), runtime());
+    achievement_toast_ = toast.get();
+    return toast;
   }
 
   void OnPreSetup(rex::RuntimeConfig& config) override {
@@ -255,6 +182,19 @@ class DantesInfernoApp : public rex::ReXApp {
     renderer::ConfigureSyncOnlyGpu();
     if (rex::cvar::Query<std::string>("renderer") == "dante") {
       renderer::Start(window());
+      // The SDK presenter is detached: ImGui records on the UI thread and the
+      // renderer draws the overlay over each presented frame.
+      if (imgui_drawer()) {
+        overlay_drawer_ = std::make_unique<renderer::OverlayDrawer>();
+        imgui_drawer()->SetPresenterAndImmediateDrawer(nullptr, overlay_drawer_.get());
+        renderer::SetOverlayFrameRequest([this] {
+          if (overlay_frame_pending_.exchange(true)) return;
+          app_context().CallInUIThread([this] {
+            overlay_frame_pending_ = false;
+            DrawOverlayFrame();
+          });
+        });
+      }
       // renderer=dante sets the aspect from a resolution wider than 16:9.
       g_ultrawide_target_aspect = static_cast<float>(REXCVAR_GET(ultrawide_target_aspect));
       // Button glyphs follow the controller in use, unless glyph_family forces a set.
@@ -322,15 +262,13 @@ class DantesInfernoApp : public rex::ReXApp {
 
     saved_vsync_ = rex::cvar::Query<bool>("vsync");
 
-    if (REXCVAR_GET(show_fps_overlay) && imgui_drawer()) {
-      fps_overlay_ = std::make_unique<FpsOverlayDialog>(imgui_drawer(), GetCommandProcessor());
-    }
+    if (REXCVAR_GET(show_fps_overlay)) CreateFpsOverlay();
 
     rex::ui::RegisterBind("bind_fps_overlay", "F1", "Toggle FPS overlay", [this] {
       if (fps_overlay_) {
         fps_overlay_.reset();
-      } else if (imgui_drawer()) {
-        fps_overlay_ = std::make_unique<FpsOverlayDialog>(imgui_drawer(), GetCommandProcessor());
+      } else {
+        CreateFpsOverlay();
       }
     });
 
@@ -502,7 +440,10 @@ class DantesInfernoApp : public rex::ReXApp {
   }
 
   void OnShutdown() override {
+    shutting_down_ = true;
+    renderer::SetOverlayFrameRequest(nullptr);
     renderer::Stop();
+    overlay::ShutdownAchievementSound();
     rex::ui::UnregisterBind("bind_fast_forward");
     rex::ui::UnregisterBind("bind_pass_trace");
     rex::ui::UnregisterBind("bind_d3d_trace");
@@ -523,12 +464,55 @@ class DantesInfernoApp : public rex::ReXApp {
   }
 
  private:
+  // Achievement icons are textures of the drawer that draws ImGui.
+  rex::ui::ImmediateDrawer* IconDrawer() const {
+    return overlay_drawer_ ? overlay_drawer_.get() : immediate_drawer();
+  }
+
+  void CreateFpsOverlay() {
+    if (!imgui_drawer()) return;
+    std::function<overlay::FpsOverlay::Sample()> counter;
+    if (overlay_drawer_) {
+      counter = [] {
+        renderer::PresentCount count = renderer::PresentedFrames();
+        return overlay::FpsOverlay::Sample{count.frames, count.last};
+      };
+    } else {
+      counter = [cp = GetCommandProcessor()] {
+        return overlay::FpsOverlay::Sample{cp ? cp->swap_counter() : 0,
+                                           std::chrono::steady_clock::now()};
+      };
+    }
+    fps_overlay_ = std::make_unique<overlay::FpsOverlay>(imgui_drawer(), std::move(counter));
+  }
+
+  // UI thread, after each presented frame (renderer=dante).
+  void DrawOverlayFrame() {
+    if (shutting_down_ || !overlay_drawer_ || !imgui_drawer() || !window()) return;
+    if (REXCVAR_GET(achievement_preview) && achievement_toast_) {
+      REXCVAR_SET(achievement_preview, false);
+      auto list = achievements().ListAchievements();
+      if (!list.empty()) achievement_toast_->Push({list.front(), 0});
+    }
+    if (!imgui_drawer()->HasDialogs()) {
+      overlay_drawer_->PublishEmpty();
+      return;
+    }
+    rex::ui::AppUIDrawContext context(window()->GetActualPhysicalWidth(),
+                                      window()->GetActualPhysicalHeight());
+    imgui_drawer()->Draw(context);
+  }
+
   rex::graphics::CommandProcessor* GetCommandProcessor() {
     auto* graphics = dynamic_cast<rex::graphics::GraphicsSystem*>(
         runtime() ? runtime()->graphics_system() : nullptr);
     return graphics ? graphics->command_processor() : nullptr;
   }
 
-  std::unique_ptr<FpsOverlayDialog> fps_overlay_;
+  std::unique_ptr<overlay::FpsOverlay> fps_overlay_;
+  std::unique_ptr<renderer::OverlayDrawer> overlay_drawer_;
+  overlay::AchievementToast* achievement_toast_ = nullptr;
+  std::atomic<bool> overlay_frame_pending_{false};
+  std::atomic<bool> shutting_down_{false};
   bool saved_vsync_ = true;
 };

@@ -7,6 +7,7 @@
 
 #include "button_glyphs.h"
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
 
@@ -74,6 +75,13 @@ void LastIndexBuffer(uint32_t& base, uint32_t& count, uint32_t& format);
 void SetButtonGlyphStyleSource(std::function<GlyphStyle()> source);
 // Keyboard / mouse bindings, asked once per frame while the keyboard style shows.
 void SetButtonGlyphBindingsSource(std::function<KeyBindings()> source);
+
+// Frames presented so far and when the last one was presented (FPS overlay).
+struct PresentCount {
+  uint64_t frames = 0;
+  std::chrono::steady_clock::time_point last;
+};
+PresentCount PresentedFrames();
 
 // log_next_frame: write the next frame's events as NATIVE-RT lines.
 void AfterSwap(const CallArgs& args, const uint8_t* base, bool log_next_frame);

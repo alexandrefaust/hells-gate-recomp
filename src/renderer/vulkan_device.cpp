@@ -50,6 +50,8 @@ struct VulkanDevice::Impl {
   Diligent::IPipelineState* blit_pipeline = nullptr;
   Diligent::ISampler* blit_sampler = nullptr;
 
+  std::function<void(Diligent::ITextureView*)> before_present;
+
   void* hwnd = nullptr;
   double display_aspect = 0.0;
   bool letterbox = true;
@@ -57,6 +59,11 @@ struct VulkanDevice::Impl {
   uint32_t logged_height = 0;
   double logged_aspect = -1.0;
   bool logged_letterbox = false;
+
+  void Present(uint32_t sync_interval) {
+    if (before_present) before_present(swapchain->GetCurrentBackBufferRTV());
+    swapchain->Present(sync_interval);
+  }
 
   void SetBlitViewport() {
     const auto& desc = swapchain->GetDesc();
@@ -203,7 +210,7 @@ void VulkanDevice::Clear(float r, float g, float b, float a) {
 
 void VulkanDevice::Present(uint32_t sync_interval) {
   if (!impl_->initialized) return;
-  impl_->swapchain->Present(sync_interval);
+  impl_->Present(sync_interval);
 }
 
 static const char* kBlitVS = R"(
@@ -379,7 +386,7 @@ bool VulkanDevice::PresentTexture(Diligent::ITextureView* srv, uint32_t sync_int
   da.NumVertices = 3;
   impl_->context->Draw(da);
   srb->Release();
-  impl_->swapchain->Present(sync_interval);
+  impl_->Present(sync_interval);
   return true;
 }
 
@@ -411,6 +418,16 @@ void main() {
   Diligent::IPipelineState* pso = nullptr;
   impl_->device->CreateGraphicsPipelineState(ci, &pso);
   return pso;
+}
+
+Diligent::IShader* VulkanDevice::CompileShader(const char* source, Diligent::SHADER_TYPE type,
+                                               const char* name) {
+  return CreateShader(impl_->device, source, type, name);
+}
+
+void VulkanDevice::SetBeforePresent(
+    std::function<void(Diligent::ITextureView* back_buffer)> callback) {
+  impl_->before_present = std::move(callback);
 }
 
 Diligent::IRenderDevice* VulkanDevice::RenderDevice() const { return impl_->device; }
