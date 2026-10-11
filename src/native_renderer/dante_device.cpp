@@ -73,6 +73,10 @@ REXCVAR_DEFINE_INT32(dante_shadow_scale, 2, "Graphics",
 REXCVAR_DEFINE_BOOL(dante_smaa, true, "Graphics",
                     "renderer=dante: SMAA anti-aliasing of the presented frame");
 
+REXCVAR_DEFINE_BOOL(dante_depth_float, false, "Diagnostics",
+                    "renderer=dante: 32-bit float depth for every depth buffer, as on GPUs "
+                    "without 24-bit depth (AMD); read at startup");
+
 REXCVAR_DEFINE_INT32(dante_replay_frames, 180, "Diagnostics",
                      "renderer=dante: keep the last N presented frames (640x360) for an "
                      "instant replay; 0 disables")
@@ -131,6 +135,8 @@ struct HostRt {
   dl::TEXTURE_FORMAT format = dl::TEX_FORMAT_UNKNOWN;
   dl::RefCntAutoPtr<dl::ITexture> texture;
   Scale scale;
+  bool depth_float24 = false;  // guest D24FS8
+  dl::RefCntAutoPtr<dl::ITextureView> stencil_view;  // depth: stencil SRV, on demand
 };
 
 // Native stand-in for a guest texture written by Resolve; no copy goes back to
@@ -169,6 +175,11 @@ struct GuestTexture {
   // Destination is slice `slice` of a 3D texture `depth` deep (depth 0: 2D).
   uint32_t depth = 0, slice = 0;
   Scale scale;
+  // Depth resolves (k_24_8) the game also samples as k_8_8_8_8: the guest
+  // memory holds the raw D24S8 words, so those reads get this RGBA8 copy
+  // (R = stencil, G / B / A = depth bits 0:7 / 8:15 / 16:23).
+  bool depth_bits_wanted = false;
+  dl::RefCntAutoPtr<dl::ITexture> depth_bits;
 };
 
 // Swaps the red and blue channel selectors of a 12-bit host swizzle.
@@ -349,8 +360,13 @@ dl::TEXTURE_FORMAT ColorFormat(uint32_t format) {
   }
 }
 
+// Guest D24S8 uses host D24S8 when the GPU can render to and sample it (AMD
+// can't), otherwise D32S8 like D24FS8. The 2^24 depth bias factor suits both.
+bool g_depth_unorm24 = true;
+
 dl::TEXTURE_FORMAT DepthFormat(uint32_t format) {
-  return format == 1 ? dl::TEX_FORMAT_D32_FLOAT_S8X24_UINT : dl::TEX_FORMAT_D24_UNORM_S8_UINT;
+  return format == 1 || !g_depth_unorm24 ? dl::TEX_FORMAT_D32_FLOAT_S8X24_UINT
+                                         : dl::TEX_FORMAT_D24_UNORM_S8_UINT;
 }
 
 // Guest texture format (fetch constant dword1 & 0x3F) as a resolve destination.
@@ -447,6 +463,7 @@ HostRt* GetRt(const SurfaceDesc& s) {
   rt.height = height;
   rt.format = desc.Format;
   rt.scale = scale;
+  rt.depth_float24 = s.depth && s.format == 1;
   REXLOG_INFO("NATIVE-RT new {} RT: edram base={} pitch={} fmt={} -> {}x{} (host {}x{})",
               s.depth ? "depth" : "color", s.base_tile, s.pitch, s.format, rt.width, rt.height,
               desc.Width, desc.Height);
@@ -469,6 +486,7 @@ GuestTexture* GetGuestTexture(uint32_t address, uint32_t width, uint32_t height,
   desc.BindFlags = dl::BIND_SHADER_RESOURCE | dl::BIND_RENDER_TARGET;
   desc.Usage = dl::USAGE_DEFAULT;
   t.texture.Release();
+  t.depth_bits.Release();
   g_device->renderDevice()->CreateTexture(desc, nullptr, &t.texture);
   if (!t.texture) {
     REXLOG_ERROR("DanteDevice: failed to create resolve target {:08X} {}x{} fmt={}", address,
@@ -553,6 +571,106 @@ bool EnsureDepthCopy() {
   d.srb->GetVariableByName(dl::SHADER_TYPE_PIXEL, "CopyParams")->Set(d.params);
   d.failed = false;
   return true;
+}
+
+// Raw D24S8 words of a depth surface as RGBA8 (see GuestTexture::depth_bits).
+DepthCopy g_depth_bits;
+
+constexpr char kDepthBitsPS[] = R"(#version 450
+layout(binding = 0) uniform texture2D g_Depth;
+layout(binding = 1) uniform utexture2D g_Stencil;
+layout(binding = 2) uniform sampler g_Point;
+layout(std140, binding = 3) uniform CopyParams { ivec4 g_SourceOffset; };
+layout(location = 0) out vec4 out_bits;
+void main() {
+  ivec2 texel = ivec2(gl_FragCoord.xy) + g_SourceOffset.xy;
+  float depth = texelFetch(sampler2D(g_Depth, g_Point), texel, 0).r;
+  uint stencil = texelFetch(usampler2D(g_Stencil, g_Point), texel, 0).r;
+  uint bits = uint(clamp(depth, 0.0, 1.0) * 16777215.0 + 0.5);
+  out_bits = vec4(uvec4(stencil & 0xFFu, bits & 0xFFu, (bits >> 8) & 0xFFu, bits >> 16)) / 255.0;
+}
+)";
+
+bool EnsureDepthBits() {
+  DepthCopy& d = g_depth_bits;
+  if (d.pso || d.failed) return d.pso;
+  d.failed = true;
+  dl::RefCntAutoPtr<dl::IShader> vs, ps;
+  vs.Attach(g_device->createGlslShader(kDepthCopyVS, false, "DepthBitsVS"));
+  ps.Attach(g_device->createGlslShader(kDepthBitsPS, true, "DepthBitsPS"));
+  if (!vs || !ps) return false;
+  dl::GraphicsPipelineStateCreateInfo ci;
+  ci.PSODesc.Name = "DepthBits";
+  ci.PSODesc.ResourceLayout.DefaultVariableType = dl::SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC;
+  ci.pVS = vs;
+  ci.pPS = ps;
+  ci.GraphicsPipeline.NumRenderTargets = 1;
+  ci.GraphicsPipeline.RTVFormats[0] = dl::TEX_FORMAT_RGBA8_UNORM;
+  ci.GraphicsPipeline.PrimitiveTopology = dl::PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+  ci.GraphicsPipeline.RasterizerDesc.CullMode = dl::CULL_MODE_NONE;
+  ci.GraphicsPipeline.RasterizerDesc.ScissorEnable = dl::True;
+  ci.GraphicsPipeline.DepthStencilDesc.DepthEnable = dl::False;
+  g_device->renderDevice()->CreateGraphicsPipelineState(ci, &d.pso);
+  if (!d.pso) return false;
+  d.pso->CreateShaderResourceBinding(&d.srb, true);
+  dl::BufferDesc params;
+  params.Name = "DepthBitsParams";
+  params.Size = 16;
+  params.BindFlags = dl::BIND_UNIFORM_BUFFER;
+  params.Usage = dl::USAGE_DYNAMIC;
+  params.CPUAccessFlags = dl::CPU_ACCESS_WRITE;
+  g_device->renderDevice()->CreateBuffer(params, nullptr, &d.params);
+  dl::SamplerDesc point;
+  point.MinFilter = point.MagFilter = point.MipFilter = dl::FILTER_TYPE_POINT;
+  dl::RefCntAutoPtr<dl::ISampler> sampler;
+  g_device->renderDevice()->CreateSampler(point, &sampler);
+  if (!d.params || !sampler) return false;
+  d.srb->GetVariableByName(dl::SHADER_TYPE_PIXEL, "g_Point")->Set(sampler);
+  d.srb->GetVariableByName(dl::SHADER_TYPE_PIXEL, "CopyParams")->Set(d.params);
+  d.failed = false;
+  return true;
+}
+
+// Writes the raw D24S8 words of depth texels [x1, x2) x [y1, y2) to (dst_x,
+// dst_y) of the RGBA8 texture `dest`.
+void CopyDepthBits(HostRt& depth, dl::ITexture* dest, uint32_t x1, uint32_t y1, uint32_t x2,
+                   uint32_t y2, uint32_t dst_x, uint32_t dst_y) {
+  if (!EnsureDepthBits()) return;
+  if (!depth.stencil_view) {
+    dl::TextureViewDesc view;
+    view.ViewType = dl::TEXTURE_VIEW_SHADER_RESOURCE;
+    view.Format = depth.format == dl::TEX_FORMAT_D24_UNORM_S8_UINT
+                      ? dl::TEX_FORMAT_X24_TYPELESS_G8_UINT
+                      : dl::TEX_FORMAT_X32_TYPELESS_G8X24_UINT;
+    depth.texture->CreateView(view, &depth.stencil_view);
+    if (!depth.stencil_view) return;
+  }
+  DepthCopy& d = g_depth_bits;
+  auto* context = g_device->immediateContext();
+  {
+    dl::MapHelper<int32_t> map(context, d.params, dl::MAP_WRITE, dl::MAP_FLAG_DISCARD);
+    map[0] = int32_t(x1) - int32_t(dst_x);
+    map[1] = int32_t(y1) - int32_t(dst_y);
+    map[2] = map[3] = 0;
+  }
+  d.srb->GetVariableByName(dl::SHADER_TYPE_PIXEL, "g_Depth")
+      ->Set(depth.texture->GetDefaultView(dl::TEXTURE_VIEW_SHADER_RESOURCE));
+  d.srb->GetVariableByName(dl::SHADER_TYPE_PIXEL, "g_Stencil")->Set(depth.stencil_view);
+  dl::ITextureView* rtv = dest->GetDefaultView(dl::TEXTURE_VIEW_RENDER_TARGET);
+  context->SetRenderTargets(1, &rtv, nullptr, dl::RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+  const auto& dest_desc = dest->GetDesc();
+  dl::Viewport vp;
+  vp.Width = float(dest_desc.Width);
+  vp.Height = float(dest_desc.Height);
+  context->SetViewports(1, &vp, dest_desc.Width, dest_desc.Height);
+  dl::Rect rect{int32_t(dst_x), int32_t(dst_y), int32_t(dst_x + (x2 - x1)),
+                int32_t(dst_y + (y2 - y1))};
+  context->SetScissorRects(1, &rect, dest_desc.Width, dest_desc.Height);
+  context->SetPipelineState(d.pso);
+  context->CommitShaderResources(d.srb, dl::RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+  dl::DrawAttribs draw;
+  draw.NumVertices = 3;
+  context->Draw(draw);
 }
 
 // Copies depth texels [x1, x2) x [y1, y2) of the host depth RT to (dst_x, dst_y).
@@ -1201,6 +1319,13 @@ bool StartDanteDevice(rex::ui::Window* window) {
   g_scale_x = scale.x;
   g_scale_y = scale.y;
   g_shadow_factor = float(std::clamp(REXCVAR_GET(dante_shadow_scale), 1, 4));
+  constexpr dl::BIND_FLAGS kDepthUse = dl::BIND_DEPTH_STENCIL | dl::BIND_SHADER_RESOURCE;
+  const auto& d24 =
+      g_device->renderDevice()->GetTextureFormatInfoExt(dl::TEX_FORMAT_D24_UNORM_S8_UINT);
+  g_depth_unorm24 = (d24.BindFlags & kDepthUse) == kDepthUse && !REXCVAR_GET(dante_depth_float);
+  REXLOG_INFO("DanteDevice: depth buffers {}", g_depth_unorm24
+                                                   ? "D24S8"
+                                                   : "D32S8 (no 24-bit depth on this GPU or forced)");
   REXLOG_INFO("DanteDevice: resolution scale {:.3f} x {:.3f} ({}x{}, display aspect {:.4f})",
               g_scale_x, g_scale_y, HostX(1280), HostY(720), scale.display_aspect);
   g_shaders = std::make_unique<ShaderCache>(g_device->renderDevice(), g_scale_x, g_scale_y);
@@ -1209,9 +1334,18 @@ bool StartDanteDevice(rex::ui::Window* window) {
       [](uint32_t address, uint32_t width, uint32_t height, uint32_t format,
          bool& rb_swap) -> dl::ITexture* {
         auto it = g_textures.find(GuestTextureKey{address, width, height, format});
+        if (it != g_textures.end()) {
+          rb_swap = it->second.rb_swap;
+          return it->second.texture.RawPtr();
+        }
+        // k_8_8_8_8 over a depth resolve (k_24_8): its raw words, from the
+        // next resolve on.
+        if (format != 6) return nullptr;
+        it = g_textures.find(GuestTextureKey{address, width, height, 22});
         if (it == g_textures.end()) return nullptr;
-        rb_swap = it->second.rb_swap;
-        return it->second.texture.RawPtr();
+        it->second.depth_bits_wanted = true;
+        rb_swap = false;
+        return it->second.depth_bits.RawPtr();
       });
   g_draws = std::make_unique<DrawRenderer>(g_device->renderDevice(), g_device->immediateContext(),
                                            g_texture_cache.get());
@@ -1236,6 +1370,7 @@ void StopDanteDevice() {
   g_readback_value = 0;
   g_replay = {};
   g_depth_copy = {};
+  g_depth_bits = {};
   g_front_views.clear();
   g_loaded_vs = {};
   g_last_ps = {};
@@ -1399,6 +1534,24 @@ void DanteOnResolve(const CallArgs& a, const uint8_t* base) {
         CopyDepth(*rt, t->texture, rt->scale.X(x1), rt->scale.Y(y1), rt->scale.X(x2),
                   rt->scale.Y(y2), t->scale.X(dst_x), t->scale.Y(dst_y));
         result = "depth-copied";
+        if (t->depth_bits_wanted && !rt->depth_float24) {
+          const auto& desc = t->texture->GetDesc();
+          if (!t->depth_bits) {
+            dl::TextureDesc bits;
+            bits.Name = "ResolveDepthBits";
+            bits.Type = dl::RESOURCE_DIM_TEX_2D;
+            bits.Width = desc.Width;
+            bits.Height = desc.Height;
+            bits.Format = dl::TEX_FORMAT_RGBA8_UNORM;
+            bits.BindFlags = dl::BIND_SHADER_RESOURCE | dl::BIND_RENDER_TARGET;
+            g_device->renderDevice()->CreateTexture(bits, nullptr, &t->depth_bits);
+            if (t->depth_bits) ClearNewTexture(t->depth_bits, false);
+          }
+          if (t->depth_bits) {
+            CopyDepthBits(*rt, t->depth_bits, rt->scale.X(x1), rt->scale.Y(y1), rt->scale.X(x2),
+                          rt->scale.Y(y2), t->scale.X(dst_x), t->scale.Y(dst_y));
+          }
+        }
       }
     } else if (t) {
       // Other format conversions need a shader copy.

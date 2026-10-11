@@ -4724,7 +4724,7 @@ index 23645ef..110e310 100644
      // make the latency even worse.
      swapchain_create_info.presentMode = VK_PRESENT_MODE_FIFO_RELAXED_KHR;
 diff --git a/src/graphics/pipeline/shader/spirv_translator_fetch.cpp b/src/graphics/pipeline/shader/spirv_translator_fetch.cpp
-index 9ce3bb4..0a34854 100644
+index 9ce3bb4..f3ede90 100644
 --- a/src/graphics/pipeline/shader/spirv_translator_fetch.cpp
 +++ b/src/graphics/pipeline/shader/spirv_translator_fetch.cpp
 @@ -974,8 +974,8 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
@@ -4759,9 +4759,44 @@ index 9ce3bb4..0a34854 100644
        }
      }
  
-@@ -2030,10 +2028,22 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
+@@ -2029,11 +2027,57 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
+           }
          }
  
++        // Round unsigned normalized fixed-point results to 16 fractional bits
++        // like the guest's filtering.
++        {
++          id_vector_temp_.clear();
++          id_vector_temp_.push_back(
++              builder_->makeIntConstant(kSystemConstantTexturesRoundNormalized));
++          spv::Id round_normalized = builder_->createBinOp(
++              spv::OpINotEqual, type_bool_,
++              builder_->createBinOp(
++                  spv::OpBitwiseAnd, type_uint_,
++                  builder_->createLoad(builder_->createAccessChain(spv::StorageClassUniform,
++                                                                   uniform_system_constants_,
++                                                                   id_vector_temp_),
++                                       spv::NoPrecision),
++                  builder_->makeUintConstant(UINT32_C(1) << fetch_constant_index)),
++              const_uint_0_);
++          spv::Id const_float_65536 = builder_->makeFloatConstant(65536.0f);
++          spv::Id const_float_1_65536 = builder_->makeFloatConstant(1.0f / 65536.0f);
++          uint32_t result_remaining_components = used_result_nonzero_components;
++          uint32_t result_component_index;
++          while (rex::bit_scan_forward(result_remaining_components, &result_component_index)) {
++            result_remaining_components &= ~(UINT32_C(1) << result_component_index);
++            spv::Id rounded = builder_->createNoContractionBinOp(
++                spv::OpFMul, type_float_, result[result_component_index], const_float_65536);
++            rounded = builder_->createUnaryBuiltinCall(type_float_, ext_inst_glsl_std_450_,
++                                                       GLSLstd450RoundEven, rounded);
++            rounded = builder_->createNoContractionBinOp(spv::OpFMul, type_float_, rounded,
++                                                         const_float_1_65536);
++            result[result_component_index] =
++                builder_->createTriOp(spv::OpSelect, type_float_, round_normalized, rounded,
++                                      result[result_component_index]);
++          }
++        }
++
          // Apply the exponent bias from the bits 13:18 of the fetch constant
 -        // word 4.
 +        // word 3.
@@ -4785,10 +4820,22 @@ index 9ce3bb4..0a34854 100644
          {
            uint32_t result_remaining_components = used_result_nonzero_components;
 diff --git a/include/rex/graphics/pipeline/shader/spirv_translator.h b/include/rex/graphics/pipeline/shader/spirv_translator.h
-index dce3dbf..e17753d 100644
+index dce3dbf..fc18299 100644
 --- a/include/rex/graphics/pipeline/shader/spirv_translator.h
 +++ b/include/rex/graphics/pipeline/shader/spirv_translator.h
-@@ -411,6 +411,16 @@ class SpirvShaderTranslator : public ShaderTranslator {
+@@ -307,6 +307,11 @@ class SpirvShaderTranslator : public ShaderTranslator {
+     uint32_t vertex_index_max;
+     float tessellation_factor_range_min;
+     float tessellation_factor_range_max;
++
++    // One bit per texture fetch constant: an unsigned normalized fetch from a
++    // fixed-point format. The guest filters these to 16 fractional bits, and
++    // some shaders compare the result against exact values, so it's rounded.
++    uint32_t textures_round_normalized;
+   };
+ 
+   enum ConstantBuffer : uint32_t {
+@@ -411,6 +416,16 @@ class SpirvShaderTranslator : public ShaderTranslator {
          draw_resolution_scale_x_(draw_resolution_scale_x ? draw_resolution_scale_x : 1),
          draw_resolution_scale_y_(draw_resolution_scale_y ? draw_resolution_scale_y : 1) {}
  
@@ -4805,7 +4852,7 @@ index dce3dbf..e17753d 100644
    uint64_t GetDefaultVertexShaderModification(
        uint32_t dynamic_addressable_register_count,
        Shader::HostVertexShaderType host_vertex_shader_type =
-@@ -758,6 +768,19 @@ class SpirvShaderTranslator : public ShaderTranslator {
+@@ -758,6 +773,19 @@ class SpirvShaderTranslator : public ShaderTranslator {
    bool edram_fragment_shader_interlock_;
    uint32_t draw_resolution_scale_x_;
    uint32_t draw_resolution_scale_y_;
@@ -4825,11 +4872,28 @@ index dce3dbf..e17753d 100644
  
    // Is currently writing the empty depth-only pixel shader, such as for depth
    // and stencil testing with fragment shader interlock.
+@@ -879,6 +907,7 @@ class SpirvShaderTranslator : public ShaderTranslator {
+     kSystemConstantEdramRTKeepMask,
+     kSystemConstantEdramRTClamp,
+     kSystemConstantEdramBlendConstant,
++    kSystemConstantTexturesRoundNormalized,
+   };
+   spv::Id uniform_system_constants_;
+   spv::Id uniform_float_constants_;
 diff --git a/src/graphics/pipeline/shader/spirv_translator.cpp b/src/graphics/pipeline/shader/spirv_translator.cpp
-index 1774f97..0f05a83 100644
+index 1774f97..a3817a5 100644
 --- a/src/graphics/pipeline/shader/spirv_translator.cpp
 +++ b/src/graphics/pipeline/shader/spirv_translator.cpp
-@@ -3210,10 +3210,10 @@ void SpirvShaderTranslator::StartFragmentShaderInMain() {
+@@ -309,6 +309,8 @@ void SpirvShaderTranslator::StartTranslation() {
+       {"edram_rt_keep_mask", offsetof(SystemConstants, edram_rt_keep_mask), type_uint4_array_2},
+       {"edram_rt_clamp", offsetof(SystemConstants, edram_rt_clamp), type_float4_array_4},
+       {"edram_blend_constant", offsetof(SystemConstants, edram_blend_constant), type_float4_},
++      {"textures_round_normalized", offsetof(SystemConstants, textures_round_normalized),
++       type_uint_},
+   };
+   id_vector_temp_.clear();
+   id_vector_temp_.reserve(rex::countof(system_constants));
+@@ -3210,10 +3212,10 @@ void SpirvShaderTranslator::StartFragmentShaderInMain() {
              builder_->createAccessChain(spv::StorageClassInput, input_fragment_coordinates_,
                                          id_vector_temp_),
              spv::NoPrecision));
@@ -4842,7 +4906,7 @@ index 1774f97..0f05a83 100644
      }
      param_gen_x = builder_->createUnaryBuiltinCall(type_float_, ext_inst_glsl_std_450_,
                                                     GLSLstd450FAbs, param_gen_x);
-@@ -3246,10 +3246,10 @@ void SpirvShaderTranslator::StartFragmentShaderInMain() {
+@@ -3246,10 +3248,10 @@ void SpirvShaderTranslator::StartFragmentShaderInMain() {
              builder_->createAccessChain(spv::StorageClassInput, input_fragment_coordinates_,
                                          id_vector_temp_),
              spv::NoPrecision));

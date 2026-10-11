@@ -17,6 +17,7 @@
 
 #include <rex/graphics/pipeline/shader/spirv.h>
 #include <rex/graphics/pipeline/shader/spirv_translator.h>
+#include <rex/graphics/pipeline/texture/info.h>
 #include <rex/graphics/pipeline/texture/util.h>
 #include <rex/graphics/register_file.h>
 #include <rex/graphics/registers.h>
@@ -741,8 +742,12 @@ bool DrawRenderer::Draw(const rg::RegisterFile& regs, const DrawShaders& shaders
       rex::graphics::xenos::xe_gpu_texture_fetch_t fetch;
       std::memcpy(&fetch, &regs.values[rg::XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + fc * 6],
                   sizeof(fetch));
-      sc.texture_swizzled_signs[fc >> 2] |= uint32_t(rg::texture_util::SwizzleSigns(fetch))
-                                            << (8 * (fc & 3));
+      uint8_t signs = rg::texture_util::SwizzleSigns(fetch);
+      sc.texture_swizzled_signs[fc >> 2] |= uint32_t(signs) << (8 * (fc & 3));
+      // Unsigned normalized fixed-point fetches round like the guest's filtering.
+      if (!fetch.num_format && !signs && rg::FormatInfo::Get(fetch.format)->fixed) {
+        sc.textures_round_normalized |= 1u << fc;
+      }
     }
   }
 
