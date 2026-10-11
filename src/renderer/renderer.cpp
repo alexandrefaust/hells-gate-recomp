@@ -5,6 +5,7 @@
 #include "button_glyphs.h"
 #include "shader_cache.h"
 #include "smaa_pass.h"
+#include "swizzle.h"
 #include "render_stats.h"
 #include "texture_cache.h"
 #include "guest_gpu_state.h"
@@ -181,17 +182,6 @@ struct ResolveTarget {
   bool depth_bits_wanted = false;
   dl::RefCntAutoPtr<dl::ITexture> depth_bits;
 };
-
-// Swaps the red and blue channel selectors of a 12-bit host swizzle.
-uint32_t SwapRedBlueSwizzle(uint32_t swizzle) {
-  uint32_t out = 0;
-  for (uint32_t i = 0; i < 4; ++i) {
-    uint32_t c = (swizzle >> (3 * i)) & 7;
-    c = c == 0 ? 2 : c == 2 ? 0 : c;
-    out |= c << (3 * i);
-  }
-  return out;
-}
 
 // Last non-zero value written to a register in (start, end], or ~0u (Resolve
 // resets the copy registers to 0 after the copy).
@@ -503,57 +493,24 @@ ResolveTarget* GetResolveTarget(uint32_t address, uint32_t width, uint32_t heigh
   return &t;
 }
 
-// Resolve of a depth surface into a sampled depth texture (k_24_8 /
-// k_24_8_FLOAT -> R32_FLOAT, depth in red): texelFetch copy pass.
-struct DepthCopy {
+// Full-screen passes that read a depth target texel by texel into a colour
+// texture, offset by g_SourceOffset (source texel - destination pixel).
+struct DepthPass {
   dl::RefCntAutoPtr<dl::IPipelineState> pso;
   dl::RefCntAutoPtr<dl::IShaderResourceBinding> srb;
   dl::RefCntAutoPtr<dl::IBuffer> params;
   bool failed = false;
 };
-DepthCopy g_depth_copy;
 
-constexpr char kDepthCopyVS[] = R"(#version 450
-void main() {
-  uint id = uint(gl_VertexIndex);
-  gl_Position = vec4(id == 1u ? 3.0 : -1.0, id == 2u ? 3.0 : -1.0, 0.0, 1.0);
-}
-)";
-constexpr char kDepthCopyPS[] = R"(#version 450
-layout(binding = 0) uniform texture2D g_Depth;
-layout(binding = 1) uniform sampler g_Point;
-layout(std140, binding = 2) uniform CopyParams { ivec4 g_SourceOffset; };
-layout(location = 0) out float out_depth;
-void main() {
-  ivec2 texel = ivec2(gl_FragCoord.xy) + g_SourceOffset.xy;
-  out_depth = texelFetch(sampler2D(g_Depth, g_Point), texel, 0).r;
-}
-)";
-
-bool EnsureDepthCopy() {
-  DepthCopy& d = g_depth_copy;
+bool EnsureDepthPass(DepthPass& d, const char* name, const char* pixel_source,
+                     dl::TEXTURE_FORMAT format) {
   if (d.pso || d.failed) return d.pso;
   d.failed = true;
-  dl::RefCntAutoPtr<dl::IShader> vs, ps;
-  vs.Attach(g_device->CreateGlslShader(kDepthCopyVS, false, "DepthCopyVS"));
-  ps.Attach(g_device->CreateGlslShader(kDepthCopyPS, true, "DepthCopyPS"));
-  if (!vs || !ps) return false;
-  dl::GraphicsPipelineStateCreateInfo ci;
-  ci.PSODesc.Name = "DepthCopy";
-  ci.PSODesc.ResourceLayout.DefaultVariableType = dl::SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC;
-  ci.pVS = vs;
-  ci.pPS = ps;
-  ci.GraphicsPipeline.NumRenderTargets = 1;
-  ci.GraphicsPipeline.RTVFormats[0] = dl::TEX_FORMAT_R32_FLOAT;
-  ci.GraphicsPipeline.PrimitiveTopology = dl::PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-  ci.GraphicsPipeline.RasterizerDesc.CullMode = dl::CULL_MODE_NONE;
-  ci.GraphicsPipeline.RasterizerDesc.ScissorEnable = dl::True;
-  ci.GraphicsPipeline.DepthStencilDesc.DepthEnable = dl::False;
-  g_device->RenderDevice()->CreateGraphicsPipelineState(ci, &d.pso);
+  d.pso.Attach(g_device->CreateFullscreenPipeline(name, pixel_source, format, true));
   if (!d.pso) return false;
   d.pso->CreateShaderResourceBinding(&d.srb, true);
   dl::BufferDesc params;
-  params.Name = "DepthCopyParams";
+  params.Name = name;
   params.Size = 16;
   params.BindFlags = dl::BIND_UNIFORM_BUFFER;
   params.Usage = dl::USAGE_DYNAMIC;
@@ -570,8 +527,60 @@ bool EnsureDepthCopy() {
   return true;
 }
 
+// Runs the pass on depth texels [x1, x2) x [y1, y2), written to (dst_x, dst_y)
+// of `dest`. The caller has bound the depth inputs.
+void RunDepthPass(DepthPass& d, dl::ITexture* dest, uint32_t x1, uint32_t y1, uint32_t x2,
+                  uint32_t y2, uint32_t dst_x, uint32_t dst_y) {
+  auto* context = g_device->Context();
+  {
+    dl::MapHelper<int32_t> map(context, d.params, dl::MAP_WRITE, dl::MAP_FLAG_DISCARD);
+    map[0] = int32_t(x1) - int32_t(dst_x);
+    map[1] = int32_t(y1) - int32_t(dst_y);
+    map[2] = map[3] = 0;
+  }
+  dl::ITextureView* rtv = dest->GetDefaultView(dl::TEXTURE_VIEW_RENDER_TARGET);
+  context->SetRenderTargets(1, &rtv, nullptr, dl::RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+  const auto& dest_desc = dest->GetDesc();
+  dl::Viewport vp;
+  vp.Width = float(dest_desc.Width);
+  vp.Height = float(dest_desc.Height);
+  context->SetViewports(1, &vp, dest_desc.Width, dest_desc.Height);
+  dl::Rect rect{int32_t(dst_x), int32_t(dst_y), int32_t(dst_x + (x2 - x1)),
+                int32_t(dst_y + (y2 - y1))};
+  context->SetScissorRects(1, &rect, dest_desc.Width, dest_desc.Height);
+  context->SetPipelineState(d.pso);
+  context->CommitShaderResources(d.srb, dl::RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+  dl::DrawAttribs draw;
+  draw.NumVertices = 3;
+  context->Draw(draw);
+}
+
+// Resolve of a depth surface into a sampled depth texture (k_24_8 /
+// k_24_8_FLOAT -> R32_FLOAT, depth in red).
+DepthPass g_depth_copy;
+
+constexpr char kDepthCopyPS[] = R"(#version 450
+layout(binding = 0) uniform texture2D g_Depth;
+layout(binding = 1) uniform sampler g_Point;
+layout(std140, binding = 2) uniform CopyParams { ivec4 g_SourceOffset; };
+layout(location = 0) out float out_depth;
+void main() {
+  ivec2 texel = ivec2(gl_FragCoord.xy) + g_SourceOffset.xy;
+  out_depth = texelFetch(sampler2D(g_Depth, g_Point), texel, 0).r;
+}
+)";
+
+void CopyDepth(RenderTarget& depth, dl::ITexture* dest, uint32_t x1, uint32_t y1, uint32_t x2,
+               uint32_t y2, uint32_t dst_x, uint32_t dst_y) {
+  DepthPass& d = g_depth_copy;
+  if (!EnsureDepthPass(d, "DepthCopy", kDepthCopyPS, dl::TEX_FORMAT_R32_FLOAT)) return;
+  d.srb->GetVariableByName(dl::SHADER_TYPE_PIXEL, "g_Depth")
+      ->Set(depth.texture->GetDefaultView(dl::TEXTURE_VIEW_SHADER_RESOURCE));
+  RunDepthPass(d, dest, x1, y1, x2, y2, dst_x, dst_y);
+}
+
 // Raw D24S8 words of a depth surface as RGBA8 (see ResolveTarget::depth_bits).
-DepthCopy g_depth_bits;
+DepthPass g_depth_bits;
 
 constexpr char kDepthBitsPS[] = R"(#version 450
 layout(binding = 0) uniform texture2D g_Depth;
@@ -588,51 +597,10 @@ void main() {
 }
 )";
 
-bool EnsureDepthBits() {
-  DepthCopy& d = g_depth_bits;
-  if (d.pso || d.failed) return d.pso;
-  d.failed = true;
-  dl::RefCntAutoPtr<dl::IShader> vs, ps;
-  vs.Attach(g_device->CreateGlslShader(kDepthCopyVS, false, "DepthBitsVS"));
-  ps.Attach(g_device->CreateGlslShader(kDepthBitsPS, true, "DepthBitsPS"));
-  if (!vs || !ps) return false;
-  dl::GraphicsPipelineStateCreateInfo ci;
-  ci.PSODesc.Name = "DepthBits";
-  ci.PSODesc.ResourceLayout.DefaultVariableType = dl::SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC;
-  ci.pVS = vs;
-  ci.pPS = ps;
-  ci.GraphicsPipeline.NumRenderTargets = 1;
-  ci.GraphicsPipeline.RTVFormats[0] = dl::TEX_FORMAT_RGBA8_UNORM;
-  ci.GraphicsPipeline.PrimitiveTopology = dl::PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-  ci.GraphicsPipeline.RasterizerDesc.CullMode = dl::CULL_MODE_NONE;
-  ci.GraphicsPipeline.RasterizerDesc.ScissorEnable = dl::True;
-  ci.GraphicsPipeline.DepthStencilDesc.DepthEnable = dl::False;
-  g_device->RenderDevice()->CreateGraphicsPipelineState(ci, &d.pso);
-  if (!d.pso) return false;
-  d.pso->CreateShaderResourceBinding(&d.srb, true);
-  dl::BufferDesc params;
-  params.Name = "DepthBitsParams";
-  params.Size = 16;
-  params.BindFlags = dl::BIND_UNIFORM_BUFFER;
-  params.Usage = dl::USAGE_DYNAMIC;
-  params.CPUAccessFlags = dl::CPU_ACCESS_WRITE;
-  g_device->RenderDevice()->CreateBuffer(params, nullptr, &d.params);
-  dl::SamplerDesc point;
-  point.MinFilter = point.MagFilter = point.MipFilter = dl::FILTER_TYPE_POINT;
-  dl::RefCntAutoPtr<dl::ISampler> sampler;
-  g_device->RenderDevice()->CreateSampler(point, &sampler);
-  if (!d.params || !sampler) return false;
-  d.srb->GetVariableByName(dl::SHADER_TYPE_PIXEL, "g_Point")->Set(sampler);
-  d.srb->GetVariableByName(dl::SHADER_TYPE_PIXEL, "CopyParams")->Set(d.params);
-  d.failed = false;
-  return true;
-}
-
-// Writes the raw D24S8 words of depth texels [x1, x2) x [y1, y2) to (dst_x,
-// dst_y) of the RGBA8 texture `dest`.
 void CopyDepthBits(RenderTarget& depth, dl::ITexture* dest, uint32_t x1, uint32_t y1, uint32_t x2,
                    uint32_t y2, uint32_t dst_x, uint32_t dst_y) {
-  if (!EnsureDepthBits()) return;
+  DepthPass& d = g_depth_bits;
+  if (!EnsureDepthPass(d, "DepthBits", kDepthBitsPS, dl::TEX_FORMAT_RGBA8_UNORM)) return;
   if (!depth.stencil_view) {
     dl::TextureViewDesc view;
     view.ViewType = dl::TEXTURE_VIEW_SHADER_RESOURCE;
@@ -642,63 +610,10 @@ void CopyDepthBits(RenderTarget& depth, dl::ITexture* dest, uint32_t x1, uint32_
     depth.texture->CreateView(view, &depth.stencil_view);
     if (!depth.stencil_view) return;
   }
-  DepthCopy& d = g_depth_bits;
-  auto* context = g_device->Context();
-  {
-    dl::MapHelper<int32_t> map(context, d.params, dl::MAP_WRITE, dl::MAP_FLAG_DISCARD);
-    map[0] = int32_t(x1) - int32_t(dst_x);
-    map[1] = int32_t(y1) - int32_t(dst_y);
-    map[2] = map[3] = 0;
-  }
   d.srb->GetVariableByName(dl::SHADER_TYPE_PIXEL, "g_Depth")
       ->Set(depth.texture->GetDefaultView(dl::TEXTURE_VIEW_SHADER_RESOURCE));
   d.srb->GetVariableByName(dl::SHADER_TYPE_PIXEL, "g_Stencil")->Set(depth.stencil_view);
-  dl::ITextureView* rtv = dest->GetDefaultView(dl::TEXTURE_VIEW_RENDER_TARGET);
-  context->SetRenderTargets(1, &rtv, nullptr, dl::RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-  const auto& dest_desc = dest->GetDesc();
-  dl::Viewport vp;
-  vp.Width = float(dest_desc.Width);
-  vp.Height = float(dest_desc.Height);
-  context->SetViewports(1, &vp, dest_desc.Width, dest_desc.Height);
-  dl::Rect rect{int32_t(dst_x), int32_t(dst_y), int32_t(dst_x + (x2 - x1)),
-                int32_t(dst_y + (y2 - y1))};
-  context->SetScissorRects(1, &rect, dest_desc.Width, dest_desc.Height);
-  context->SetPipelineState(d.pso);
-  context->CommitShaderResources(d.srb, dl::RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-  dl::DrawAttribs draw;
-  draw.NumVertices = 3;
-  context->Draw(draw);
-}
-
-// Copies depth texels [x1, x2) x [y1, y2) of the host depth RT to (dst_x, dst_y).
-void CopyDepth(RenderTarget& depth, dl::ITexture* dest, uint32_t x1, uint32_t y1, uint32_t x2,
-               uint32_t y2, uint32_t dst_x, uint32_t dst_y) {
-  if (!EnsureDepthCopy()) return;
-  DepthCopy& d = g_depth_copy;
-  auto* context = g_device->Context();
-  {
-    dl::MapHelper<int32_t> map(context, d.params, dl::MAP_WRITE, dl::MAP_FLAG_DISCARD);
-    map[0] = int32_t(x1) - int32_t(dst_x);
-    map[1] = int32_t(y1) - int32_t(dst_y);
-    map[2] = map[3] = 0;
-  }
-  d.srb->GetVariableByName(dl::SHADER_TYPE_PIXEL, "g_Depth")
-      ->Set(depth.texture->GetDefaultView(dl::TEXTURE_VIEW_SHADER_RESOURCE));
-  dl::ITextureView* rtv = dest->GetDefaultView(dl::TEXTURE_VIEW_RENDER_TARGET);
-  context->SetRenderTargets(1, &rtv, nullptr, dl::RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-  const auto& dest_desc = dest->GetDesc();
-  dl::Viewport vp;
-  vp.Width = float(dest_desc.Width);
-  vp.Height = float(dest_desc.Height);
-  context->SetViewports(1, &vp, dest_desc.Width, dest_desc.Height);
-  dl::Rect rect{int32_t(dst_x), int32_t(dst_y), int32_t(dst_x + (x2 - x1)),
-                int32_t(dst_y + (y2 - y1))};
-  context->SetScissorRects(1, &rect, dest_desc.Width, dest_desc.Height);
-  context->SetPipelineState(d.pso);
-  context->CommitShaderResources(d.srb, dl::RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-  dl::DrawAttribs draw;
-  draw.NumVertices = 3;
-  context->Draw(draw);
+  RunDepthPass(d, dest, x1, y1, x2, y2, dst_x, dst_y);
 }
 
 void ClearColor(RenderTarget& rt, const float color[4]) {
@@ -1044,26 +959,13 @@ void SubmitDraw(uint32_t dev, uint32_t initiator, uint32_t dma_base, uint32_t dm
     g_register_file->values[fetch + 1] = (words << 2) | 2;  // k8in32
   }
   TranslatedShaders shaders;
-  if (!g_shader_cache->Prepare(*g_register_file, VertexShaderCode(base, dev), PixelShaderCode(base, dev),
-                          shaders)) {
+  if (!g_shader_cache->Prepare(*g_register_file, VertexShaderCode(base, dev),
+                               PixelShaderCode(base, dev), shaders)) {
     ++g_draws_without_shaders;
     return;
   }
-  DrawShaders draw_shaders{shaders.vertex,     shaders.pixel,      shaders.vertex_info,
-                           shaders.pixel_info, shaders.vertex_key, shaders.pixel_key};
-  g_draw_renderer->Draw(*g_register_file, draw_shaders, BoundTargets(base, dev), base, g_log_this_frame,
-                inline_draw ? 95u : ~0u);
-}
-
-dl::TEXTURE_COMPONENT_SWIZZLE ComponentSwizzle(uint32_t component) {
-  switch (component) {
-    case 0: return dl::TEXTURE_COMPONENT_SWIZZLE_R;
-    case 1: return dl::TEXTURE_COMPONENT_SWIZZLE_G;
-    case 2: return dl::TEXTURE_COMPONENT_SWIZZLE_B;
-    case 3: return dl::TEXTURE_COMPONENT_SWIZZLE_A;
-    case 4: return dl::TEXTURE_COMPONENT_SWIZZLE_ZERO;
-    default: return dl::TEXTURE_COMPONENT_SWIZZLE_ONE;
-  }
+  g_draw_renderer->Draw(*g_register_file, shaders, BoundTargets(base, dev), base, g_log_this_frame,
+                        inline_draw ? 95u : ~0u);
 }
 
 std::unordered_map<uint64_t, dl::RefCntAutoPtr<dl::ITextureView>> g_front_views;
@@ -1071,12 +973,6 @@ std::unordered_map<uint64_t, dl::RefCntAutoPtr<dl::ITextureView>> g_front_views;
 // Instant replay: the last presented frames, downscaled, kept on the GPU; Home
 // writes them with per-frame notes to frame_dump/replay_<frame>/.
 constexpr uint32_t kReplayWidth = 640, kReplayHeight = 360;
-constexpr char kReplayVS[] = R"(#version 450
-void main() {
-  uint id = uint(gl_VertexIndex);
-  gl_Position = vec4(id == 1u ? 3.0 : -1.0, id == 2u ? 3.0 : -1.0, 0.0, 1.0);
-}
-)";
 constexpr char kReplayPS[] = R"(#version 450
 layout(binding = 0) uniform texture2D g_Source;
 layout(binding = 1) uniform sampler g_Linear;
@@ -1102,21 +998,7 @@ bool EnsureReplay(uint32_t capacity) {
   if (r.failed) return false;
   if (!r.pso) {
     r.failed = true;
-    dl::RefCntAutoPtr<dl::IShader> vs, ps;
-    vs.Attach(g_device->CreateGlslShader(kReplayVS, false, "ReplayVS"));
-    ps.Attach(g_device->CreateGlslShader(kReplayPS, true, "ReplayPS"));
-    if (!vs || !ps) return false;
-    dl::GraphicsPipelineStateCreateInfo ci;
-    ci.PSODesc.Name = "Replay";
-    ci.PSODesc.ResourceLayout.DefaultVariableType = dl::SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC;
-    ci.pVS = vs;
-    ci.pPS = ps;
-    ci.GraphicsPipeline.NumRenderTargets = 1;
-    ci.GraphicsPipeline.RTVFormats[0] = dl::TEX_FORMAT_RGBA8_UNORM;
-    ci.GraphicsPipeline.PrimitiveTopology = dl::PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    ci.GraphicsPipeline.RasterizerDesc.CullMode = dl::CULL_MODE_NONE;
-    ci.GraphicsPipeline.DepthStencilDesc.DepthEnable = dl::False;
-    g_device->RenderDevice()->CreateGraphicsPipelineState(ci, &r.pso);
+    r.pso.Attach(g_device->CreateFullscreenPipeline("Replay", kReplayPS, dl::TEX_FORMAT_RGBA8_UNORM));
     if (!r.pso) return false;
     r.pso->CreateShaderResourceBinding(&r.srb, true);
     dl::SamplerDesc linear;
@@ -1268,8 +1150,7 @@ dl::ITextureView* FrontBufferView(dl::ITexture* texture, uint32_t swizzle) {
   dl::TextureViewDesc desc;
   desc.ViewType = dl::TEXTURE_VIEW_SHADER_RESOURCE;
   desc.TextureDim = dl::RESOURCE_DIM_TEX_2D;
-  desc.Swizzle = {ComponentSwizzle(swizzle & 7), ComponentSwizzle((swizzle >> 3) & 7),
-                  ComponentSwizzle((swizzle >> 6) & 7), ComponentSwizzle((swizzle >> 9) & 7)};
+  desc.Swizzle = ComponentMapping(swizzle);
   dl::RefCntAutoPtr<dl::ITextureView> view;
   texture->CreateView(desc, &view);
   g_front_views.emplace(key, view);

@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include "shader_cache.h"
+
 #include <cstdint>
 #include <memory>
 
@@ -12,12 +14,10 @@ namespace Diligent {
 struct IRenderDevice;
 struct IDeviceContext;
 struct ITextureView;
-struct IShader;
 }  // namespace Diligent
 
 namespace rex::graphics {
 class RegisterFile;
-class SpirvShader;
 }  // namespace rex::graphics
 
 namespace renderer {
@@ -37,15 +37,6 @@ struct DrawTargets {
   float scale_y = 1.0f;
 };
 
-struct DrawShaders {
-  Diligent::IShader* vertex = nullptr;
-  Diligent::IShader* pixel = nullptr;
-  const rex::graphics::SpirvShader* vertex_info = nullptr;
-  const rex::graphics::SpirvShader* pixel_info = nullptr;
-  uint64_t vertex_key = 0;
-  uint64_t pixel_key = 0;
-};
-
 class DrawRenderer {
  public:
   DrawRenderer(Diligent::IRenderDevice* device, Diligent::IDeviceContext* context,
@@ -57,7 +48,7 @@ class DrawRenderer {
   // log: write one NATIVE-DRAW line describing the draw.
   // volatile_fetch: vertex fetch constant whose data may change within a frame
   // (inline vertices); other vertex data is checked once per frame.
-  bool Draw(const rex::graphics::RegisterFile& regs, const DrawShaders& shaders,
+  bool Draw(const rex::graphics::RegisterFile& regs, const TranslatedShaders& shaders,
             const DrawTargets& targets, const uint8_t* base, bool log,
             uint32_t volatile_fetch = ~0u);
 

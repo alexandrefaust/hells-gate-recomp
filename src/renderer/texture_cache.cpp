@@ -1,6 +1,7 @@
 #include "texture_cache.h"
 
 #include "guest_memory.h"
+#include "swizzle.h"
 
 #include "Common/interface/RefCntAutoPtr.hpp"
 #include "Graphics/GraphicsEngine/interface/DeviceContext.h"
@@ -113,17 +114,6 @@ bool GetHostFormat(xenos::TextureFormat format, HostFormat& out) {
   }
 }
 
-dl::TEXTURE_COMPONENT_SWIZZLE Swizzle(uint32_t component) {
-  switch (component) {
-    case 0: return dl::TEXTURE_COMPONENT_SWIZZLE_R;
-    case 1: return dl::TEXTURE_COMPONENT_SWIZZLE_G;
-    case 2: return dl::TEXTURE_COMPONENT_SWIZZLE_B;
-    case 3: return dl::TEXTURE_COMPONENT_SWIZZLE_A;
-    case 4: return dl::TEXTURE_COMPONENT_SWIZZLE_ZERO;
-    default: return dl::TEXTURE_COMPONENT_SWIZZLE_ONE;
-  }
-}
-
 dl::TEXTURE_ADDRESS_MODE AddressMode(xenos::ClampMode mode) {
   switch (mode) {
     case xenos::ClampMode::kRepeat: return dl::TEXTURE_ADDRESS_WRAP;
@@ -178,6 +168,24 @@ struct GuestTextureEntry {
   uint64_t checked_frame = UINT64_MAX;
 };
 
+// Cheap change detection: the first 64 bytes of every 4 KB page.
+void HashSamples(XXH3_state_t& state, const uint8_t* data, uint32_t size) {
+  for (uint32_t offset = 0; offset < size; offset += 4096) {
+    XXH3_64bits_update(&state, data + offset, std::min<uint32_t>(64, size - offset));
+  }
+}
+
+uint64_t SampleHash(const uint8_t* data, uint32_t size) {
+  XXH3_state_t state;
+  XXH3_64bits_reset(&state);
+  HashSamples(state, data, size);
+  return XXH3_64bits_digest(&state);
+}
+
+uint32_t Log2BytesPerBlock(uint32_t bpb) {
+  return bpb >= 16 ? 4 : bpb >= 8 ? 3 : bpb >= 4 ? 2 : bpb >= 2 ? 1 : 0;
+}
+
 }  // namespace
 
 struct TextureCache::Impl {
@@ -194,16 +202,6 @@ struct TextureCache::Impl {
   uint32_t uploads = 0, resolved_hits = 0, unsupported = 0;
   uint64_t uploaded_bytes = 0;
 
-  // Cheap change detection: the first 64 bytes of every 4 KB page.
-  static uint64_t SampleHash(const uint8_t* data, uint32_t size) {
-    XXH3_state_t state;
-    XXH3_64bits_reset(&state);
-    for (uint32_t offset = 0; offset < size; offset += 4096) {
-      XXH3_64bits_update(&state, data + offset, std::min<uint32_t>(64, size - offset));
-    }
-    return XXH3_64bits_digest(&state);
-  }
-
   // format: view format for typeless textures (UNKNOWN = the texture's own).
   dl::ITextureView* View(dl::ITexture* texture, uint32_t swizzle,
                          dl::RESOURCE_DIMENSION dimension = dl::RESOURCE_DIM_TEX_2D_ARRAY,
@@ -216,8 +214,7 @@ struct TextureCache::Impl {
     desc.ViewType = dl::TEXTURE_VIEW_SHADER_RESOURCE;
     desc.TextureDim = dimension;
     desc.Format = format;
-    desc.Swizzle = {Swizzle(swizzle & 7), Swizzle((swizzle >> 3) & 7), Swizzle((swizzle >> 6) & 7),
-                    Swizzle((swizzle >> 9) & 7)};
+    desc.Swizzle = ComponentMapping(swizzle);
     dl::RefCntAutoPtr<dl::ITextureView> view;
     texture->CreateView(desc, &view);
     views.emplace(key, view);
@@ -244,7 +241,7 @@ struct TextureCache::Impl {
     const rg::FormatInfo* format_info = rg::FormatInfo::Get(format);
     uint32_t bw = format_info->block_width, bh = format_info->block_height;
     uint32_t bpb = host.bytes_per_block;
-    uint32_t bpb_log2 = bpb >= 16 ? 4 : bpb >= 8 ? 3 : bpb >= 4 ? 2 : bpb >= 2 ? 1 : 0;
+    uint32_t bpb_log2 = Log2BytesPerBlock(bpb);
     uint32_t width = width_m1 + 1, height = height_m1 + 1, array_size = depth_m1 + 1;
     uint32_t max_level = mip_page ? mip_max : 0;
     auto dimension = xenos::DataDimension(fetch.dimension);
@@ -260,10 +257,7 @@ struct TextureCache::Impl {
       auto sample = [&](uint32_t address, uint32_t size) {
         if (!size || address >= guest::kPhysicalMemorySize) return;
         size = std::min(size, guest::kPhysicalMemorySize - address);
-        const uint8_t* p = guest::PhysicalPtr(base, address);
-        for (uint32_t offset = 0; offset < size; offset += 4096) {
-          XXH3_64bits_update(&state, p + offset, std::min<uint32_t>(64, size - offset));
-        }
+        HashSamples(state, guest::PhysicalPtr(base, address), size);
       };
       sample(base_address, layout.base.level_data_extent_bytes);
       if (max_level) sample(mip_address, layout.mips_total_extent_bytes);
@@ -397,15 +391,7 @@ dl::ITextureView* TextureCache::GetView2D(const uint32_t fetch_dwords[6], const 
           m.resolve_lookup(address, width, height, uint32_t(info.format), rb_swap)) {
     ++m.resolved_hits;
     src_kind = 'R';
-    if (rb_swap) {
-      // Swap the red/blue channel selectors of the host swizzle.
-      uint32_t swapped = 0;
-      for (uint32_t i = 0; i < 4; ++i) {
-        uint32_t c = (swizzle >> (3 * i)) & 7;
-        swapped |= (c == 0 ? 2u : c == 2 ? 0u : c) << (3 * i);
-      }
-      swizzle = swapped;
-    }
+    if (rb_swap) swizzle = SwapRedBlueSwizzle(swizzle);
     return m.View(resolved, swizzle);
   }
 
@@ -576,7 +562,7 @@ dl::ITextureView* TextureCache::GetView3D(const uint32_t fetch_dwords[6], const 
   if (entry.texture && entry.checked_frame == frame) {
     return m.View(entry.texture, swizzle, dl::RESOURCE_DIM_TEX_3D, view_format);
   }
-  uint64_t hash = Impl::SampleHash(src, size);
+  uint64_t hash = SampleHash(src, size);
   entry.checked_frame = frame;
   if (entry.texture && entry.content_hash == hash) {
     return m.View(entry.texture, swizzle, dl::RESOURCE_DIM_TEX_3D, view_format);
@@ -584,7 +570,7 @@ dl::ITextureView* TextureCache::GetView3D(const uint32_t fetch_dwords[6], const 
   entry.content_hash = hash;
 
   uint32_t bpb = host.bytes_per_block;
-  uint32_t bpb_log2 = bpb >= 16 ? 4 : bpb >= 8 ? 3 : bpb >= 4 ? 2 : bpb >= 2 ? 1 : 0;
+  uint32_t bpb_log2 = Log2BytesPerBlock(bpb);
   m.staging.assign(size_t(width) * height * depth * bpb, 0);
   for (uint32_t z = 0; z < depth; ++z) {
     for (uint32_t y = 0; y < height; ++y) {

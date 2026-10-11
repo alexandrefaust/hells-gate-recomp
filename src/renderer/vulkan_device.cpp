@@ -17,6 +17,7 @@
 #include "Graphics/GraphicsEngine/interface/Sampler.h"
 #include "Graphics/GraphicsAccessories/interface/GraphicsAccessories.hpp"
 #include "Primitives/interface/DebugOutput.h"
+#include "Common/interface/RefCntAutoPtr.hpp"
 
 #include <rex/logging/macros.h>
 
@@ -405,6 +406,36 @@ Diligent::IShader* VulkanDevice::CreateGlslShader(const char* source, bool pixel
                                                   const char* name) {
   return CreateShader(impl_->device, source,
                       pixel ? Diligent::SHADER_TYPE_PIXEL : Diligent::SHADER_TYPE_VERTEX, name);
+}
+
+Diligent::IPipelineState* VulkanDevice::CreateFullscreenPipeline(const char* name,
+                                                               const char* pixel_source,
+                                                               Diligent::TEXTURE_FORMAT format,
+                                                               bool scissor) {
+  static constexpr char kFullscreenVS[] = R"(#version 450
+void main() {
+  uint id = uint(gl_VertexIndex);
+  gl_Position = vec4(id == 1u ? 3.0 : -1.0, id == 2u ? 3.0 : -1.0, 0.0, 1.0);
+}
+)";
+  Diligent::RefCntAutoPtr<Diligent::IShader> vs, ps;
+  vs.Attach(CreateShader(impl_->device, kFullscreenVS, Diligent::SHADER_TYPE_VERTEX, name));
+  ps.Attach(CreateShader(impl_->device, pixel_source, Diligent::SHADER_TYPE_PIXEL, name));
+  if (!vs || !ps) return nullptr;
+  Diligent::GraphicsPipelineStateCreateInfo ci;
+  ci.PSODesc.Name = name;
+  ci.PSODesc.ResourceLayout.DefaultVariableType = Diligent::SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC;
+  ci.pVS = vs;
+  ci.pPS = ps;
+  ci.GraphicsPipeline.NumRenderTargets = 1;
+  ci.GraphicsPipeline.RTVFormats[0] = format;
+  ci.GraphicsPipeline.PrimitiveTopology = Diligent::PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+  ci.GraphicsPipeline.RasterizerDesc.CullMode = Diligent::CULL_MODE_NONE;
+  ci.GraphicsPipeline.RasterizerDesc.ScissorEnable = scissor ? Diligent::True : Diligent::False;
+  ci.GraphicsPipeline.DepthStencilDesc.DepthEnable = Diligent::False;
+  Diligent::IPipelineState* pso = nullptr;
+  impl_->device->CreateGraphicsPipelineState(ci, &pso);
+  return pso;
 }
 
 Diligent::IRenderDevice* VulkanDevice::RenderDevice() const { return impl_->device; }

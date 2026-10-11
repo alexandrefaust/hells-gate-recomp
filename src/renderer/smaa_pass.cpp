@@ -67,16 +67,8 @@ layout(binding = 2) uniform sampler g_Point;
 #define bool4 bvec4
 )";
 
-// One triangle covering the target. The pixel shaders derive their texture
-// coordinates from gl_FragCoord (top-left origin), so viewport orientation
-// does not matter.
-constexpr char kFullscreenVS[] = R"(#version 450
-void main() {
-  uint id = uint(gl_VertexIndex);
-  gl_Position = vec4(id == 1u ? 3.0 : -1.0, id == 2u ? 3.0 : -1.0, 0.0, 1.0);
-}
-)";
-
+// The pixel shaders derive their texture coordinates from gl_FragCoord
+// (top-left origin), so viewport orientation does not matter.
 constexpr char kEdgesPS[] = R"(
 layout(binding = 3) uniform texture2D g_Color;
 layout(location = 0) out vec2 out_edges;
@@ -133,7 +125,6 @@ struct Pass {
 struct SmaaPass::Impl {
   renderer::VulkanDevice* device = nullptr;
   bool failed = false;
-  dl::RefCntAutoPtr<dl::IShader> vs;
   dl::RefCntAutoPtr<dl::IBuffer> constants;
   dl::RefCntAutoPtr<dl::ISampler> linear, point;
   dl::RefCntAutoPtr<dl::ITexture> area, search;
@@ -149,20 +140,7 @@ struct SmaaPass::Impl {
 
   bool MakePass(Pass& pass, const char* name, const char* main, dl::TEXTURE_FORMAT target) {
     std::string source = PixelSource(main);
-    dl::RefCntAutoPtr<dl::IShader> ps;
-    ps.Attach(device->CreateGlslShader(source.c_str(), true, name));
-    if (!ps) return false;
-    dl::GraphicsPipelineStateCreateInfo ci;
-    ci.PSODesc.Name = name;
-    ci.PSODesc.ResourceLayout.DefaultVariableType = dl::SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC;
-    ci.pVS = vs;
-    ci.pPS = ps;
-    ci.GraphicsPipeline.NumRenderTargets = 1;
-    ci.GraphicsPipeline.RTVFormats[0] = target;
-    ci.GraphicsPipeline.PrimitiveTopology = dl::PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    ci.GraphicsPipeline.RasterizerDesc.CullMode = dl::CULL_MODE_NONE;
-    ci.GraphicsPipeline.DepthStencilDesc.DepthEnable = dl::False;
-    render_device()->CreateGraphicsPipelineState(ci, &pass.pso);
+    pass.pso.Attach(device->CreateFullscreenPipeline(name, source.c_str(), target));
     if (!pass.pso) return false;
     pass.pso->CreateShaderResourceBinding(&pass.srb, true);
     pass.Set("SmaaConstants", constants);
@@ -192,7 +170,6 @@ struct SmaaPass::Impl {
   }
 
   bool Init() {
-    vs.Attach(device->CreateGlslShader(kFullscreenVS, false, "SmaaVS"));
     dl::BufferDesc cb;
     cb.Name = "SmaaConstants";
     cb.Size = 16;
@@ -211,7 +188,7 @@ struct SmaaPass::Impl {
                       areaTexBytes, AREATEX_PITCH);
     search = MakeLookup("SmaaSearch", SEARCHTEX_WIDTH, SEARCHTEX_HEIGHT, dl::TEX_FORMAT_R8_UNORM,
                         searchTexBytes, SEARCHTEX_PITCH);
-    if (!vs || !constants || !linear || !point || !area || !search) return false;
+    if (!constants || !linear || !point || !area || !search) return false;
     if (!MakePass(edges, "SmaaEdges", kEdgesPS, dl::TEX_FORMAT_RG8_UNORM)) return false;
     if (!MakePass(weights, "SmaaWeights", kWeightsPS, dl::TEX_FORMAT_RGBA8_UNORM)) return false;
     weights.Set("g_Area", area->GetDefaultView(dl::TEXTURE_VIEW_SHADER_RESOURCE));

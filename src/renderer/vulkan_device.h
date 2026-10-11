@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Graphics/GraphicsEngine/interface/GraphicsTypes.h"
+
 #include <cstdint>
 #include <memory>
 
@@ -8,6 +10,7 @@ struct IRenderDevice;
 struct IDeviceContext;
 struct ITextureView;
 struct IShader;
+struct IPipelineState;
 }  // namespace Diligent
 
 namespace renderer {
@@ -36,6 +39,13 @@ class VulkanDevice {
 
   // GLSL (Vulkan) -> SPIR-V -> shader; the caller owns the returned reference.
   Diligent::IShader* CreateGlslShader(const char* source, bool pixel, const char* name);
+
+  // One triangle covering the target, shaded by `pixel_source` (GLSL) into a
+  // single render target, no depth; resources default to dynamic. The
+  // caller owns the returned reference.
+  Diligent::IPipelineState* CreateFullscreenPipeline(const char* name, const char* pixel_source,
+                                                     Diligent::TEXTURE_FORMAT format,
+                                                     bool scissor = false);
 
   Diligent::IRenderDevice* RenderDevice() const;
   Diligent::IDeviceContext* Context() const;

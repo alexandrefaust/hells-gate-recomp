@@ -220,7 +220,7 @@ struct DrawRenderer::Impl {
   dl::IBuffer* CreateUniform(const char* name, uint32_t size);
   // always_check: data rewritten within a frame (inline vertices in the ring).
   void Upload(const uint8_t* base, uint32_t address, uint32_t size, bool always_check = false);
-  Pipeline* GetPipeline(const PipelineKey& key, const DrawShaders& shaders);
+  Pipeline* GetPipeline(const PipelineKey& key, const TranslatedShaders& shaders);
   void BindStatic(Pipeline& pipeline, dl::SHADER_TYPE stage);
 };
 
@@ -364,7 +364,7 @@ void DrawRenderer::Impl::BindStatic(Pipeline& pipeline, dl::SHADER_TYPE stage) {
   }
 }
 
-Pipeline* DrawRenderer::Impl::GetPipeline(const PipelineKey& key, const DrawShaders& shaders) {
+Pipeline* DrawRenderer::Impl::GetPipeline(const PipelineKey& key, const TranslatedShaders& shaders) {
   auto it = pipelines.find(key);
   if (it != pipelines.end()) return it->second.pso ? &it->second : nullptr;
   Pipeline& p = pipelines[key];
@@ -452,7 +452,7 @@ DrawRenderer::~DrawRenderer() = default;
 
 void DrawRenderer::SetFrame(uint64_t frame) { impl_->frame = frame; }
 
-bool DrawRenderer::Draw(const rg::RegisterFile& regs, const DrawShaders& shaders,
+bool DrawRenderer::Draw(const rg::RegisterFile& regs, const TranslatedShaders& shaders,
                         const DrawTargets& targets, const uint8_t* base, bool log,
                         uint32_t volatile_fetch) {
   Impl& m = *impl_;
