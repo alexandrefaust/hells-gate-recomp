@@ -5026,3 +5026,29 @@ index c7c440d..b06d057 100644
      out.push_back(info);
    }
  }
+diff --git a/src/audio/xma_context.cpp b/src/audio/xma_context.cpp
+index 11b83be..4ee14f9 100644
+--- a/src/audio/xma_context.cpp
++++ b/src/audio/xma_context.cpp
+@@ -98,6 +98,11 @@ bool XmaContext::Work() {
+   }
+ 
+   std::lock_guard<std::mutex> lock(lock_);
++  // A sweep can wait on lock_ across a guest XMADisableContext; decoding then
++  // would overwrite the guest's context update.
++  if (!is_allocated() || !is_enabled()) {
++    return false;
++  }
+   set_is_enabled(false);
+ 
+   auto context_ptr = memory()->TranslateVirtual(guest_ptr());
+@@ -417,7 +422,8 @@ void XmaContext::StoreContextMerged(const XMA_CONTEXT_DATA& data,
+   fresh.input_buffer_read_offset = data.input_buffer_read_offset;
+   fresh.error_status = data.error_status;
+   fresh.current_buffer = data.current_buffer;
+-  fresh.output_buffer_read_offset = data.output_buffer_read_offset;
++  // output_buffer_read_offset is guest-owned; storing the snapshot would undo
++  // XMASetOutputBufferReadOffset and replay consumed output.
+ 
+   fresh.Store(context_ptr);
+ }
