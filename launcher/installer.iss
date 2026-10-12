@@ -4,7 +4,7 @@
 #define MyAppPublisher "florinp93"
 #define MyAppURL "https://github.com/florinp93/hells-gate-recomp"
 #define MyAppExeName "DantesInfernoLauncher.exe"
-#define MyAppVersion "0.8.3-beta-hotfix"
+#define MyAppVersion "0.8.3-beta-hotfix2"
 
 [Setup]
 AppId={{DANTES-INFERNO-PC-PORT}}
@@ -44,12 +44,15 @@ Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortugue
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-; Port binaries (from the C++ build)
-Source: "..\out\build\win-amd64-release\dantes_inferno.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\out\build\win-amd64-release\rexruntime.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\out\build\win-amd64-release\rexgpu-xenos.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\out\build\win-amd64-release\amd_fidelityfx_dx12.dll"; DestDir: "{app}"; Flags: ignoreversion
-#define FfxVkPath SourcePath + "\..\out\build\win-amd64-release\thirdparty\rexglue-sdk\out\win-amd64\amd_fidelityfx_vk.dll"
+; Port binaries; package-release.ps1 passes GameBuildDir.
+#ifndef GameBuildDir
+  #define GameBuildDir SourcePath + "\..\out\build\win-amd64-release"
+#endif
+Source: "{#GameBuildDir}\dantes_inferno.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#GameBuildDir}\rexruntime.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#GameBuildDir}\rexgpu-xenos.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#GameBuildDir}\amd_fidelityfx_dx12.dll"; DestDir: "{app}"; Flags: ignoreversion
+#define FfxVkPath GameBuildDir + "\thirdparty\rexglue-sdk\out\win-amd64\amd_fidelityfx_vk.dll"
 #if FileExists(FfxVkPath)
 Source: "{#FfxVkPath}"; DestDir: "{app}"; Flags: ignoreversion
 #endif
@@ -68,7 +71,7 @@ Source: "..\tools\extract-xiso\extract-xiso.exe"; DestDir: "{tmp}"; Flags: delet
 
 ; Title Update 2, needed for playable DLC such as Trials of Saint Lucia; the
 ; game applies default.xexp found next to default.xex.
-#define TuPath SourcePath + "\..\out\build\win-amd64-release\default.xexp"
+#define TuPath GameBuildDir + "\default.xexp"
 #if FileExists(TuPath)
 Source: "{#TuPath}"; DestDir: "{app}\game"; Flags: ignoreversion
 #endif

@@ -100,7 +100,7 @@ if (Test-Path $OutputDir) { Remove-Item $OutputDir -Recurse -Force }
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 
 Write-Host "Compiling Inno Setup installer..."
-& $iscc "/O$OutputDir" (Join-Path $root "installer.iss") 2>&1
+& $iscc "/O$OutputDir" "/DGameBuildDir=$GameBuildDir" (Join-Path $root "installer.iss") 2>&1
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed." }
 
 # Debug symbols of this release (not shipped): map crash-log addresses to functions.
