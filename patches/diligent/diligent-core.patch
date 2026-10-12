@@ -1,3 +1,42 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index c5c74dc..f18bcc6 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -461,10 +461,6 @@ if(MSVC)
+     if(NOT DILIGENT_SANITIZER)
+         list(APPEND DEFAULT_DILIGENT_MSVC_RELEASE_COMPILE_OPTIONS /GL)
+     endif()
+-    if("${TARGET_CPU}" STREQUAL "x86_64")
+-        # Enable AVX2
+-        list(APPEND DEFAULT_DILIGENT_MSVC_RELEASE_COMPILE_OPTIONS /arch:AVX2)
+-    endif()
+     set(DILIGENT_MSVC_RELEASE_COMPILE_OPTIONS "${DEFAULT_DILIGENT_MSVC_RELEASE_COMPILE_OPTIONS}" CACHE STRING "Additional MSVC compile options for release configurations")
+     if (DILIGENT_MSVC_RELEASE_COMPILE_OPTIONS)
+         message("Additional MSVC compile options for release configurations: " ${DILIGENT_MSVC_RELEASE_COMPILE_OPTIONS})
+@@ -524,10 +520,6 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+         message("Additional Clang compile options for debug configuration: " ${DILIGENT_CLANG_DEBUG_COMPILE_OPTIONS})
+     endif()
+ 
+-    if("${TARGET_CPU}" STREQUAL "x86_64")
+-        # Enable AVX2
+-        set(DILIGENT_CLANG_RELEASE_COMPILE_OPTIONS "-mavx2")
+-    endif()
+     set(DILIGENT_CLANG_RELEASE_COMPILE_OPTIONS ${DILIGENT_CLANG_RELEASE_COMPILE_OPTIONS} CACHE STRING "Additional Clang compile options for release configurations")
+     if (DILIGENT_CLANG_RELEASE_COMPILE_OPTIONS)
+         message("Additional Clang compile options for release configurations: " ${DILIGENT_CLANG_RELEASE_COMPILE_OPTIONS})
+diff --git a/Graphics/GraphicsEngineVulkan/include/SwapChainVkImpl.hpp b/Graphics/GraphicsEngineVulkan/include/SwapChainVkImpl.hpp
+index 3e7ae1b..98a518f 100644
+--- a/Graphics/GraphicsEngineVulkan/include/SwapChainVkImpl.hpp
++++ b/Graphics/GraphicsEngineVulkan/include/SwapChainVkImpl.hpp
+@@ -125,7 +125,7 @@ private:
+     Uint32   m_SemaphoreIndex  = 0;
+     uint32_t m_BackBufferIndex = 0;
+     bool     m_IsMinimized     = false;
+-    bool     m_VSyncEnabled    = true;
++    bool     m_VSyncEnabled    = false;
+     bool     m_ImageAcquired   = false;
+     Uint32   m_FrameIndex      = 1;
+ };
 diff --git a/Graphics/GraphicsEngineVulkan/src/VulkanTypeConversions.cpp b/Graphics/GraphicsEngineVulkan/src/VulkanTypeConversions.cpp
 index dcab4e9..781fef2 100644
 --- a/Graphics/GraphicsEngineVulkan/src/VulkanTypeConversions.cpp
