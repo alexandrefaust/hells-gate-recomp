@@ -56,8 +56,16 @@ namespace DantesInferno
                     sb.AppendLine($"{key} = \"{Escape(value)}\"");
             }
 
-            Directory.CreateDirectory(Path.GetDirectoryName(_path) ?? ".");
-            File.WriteAllText(_path, sb.ToString(), Encoding.UTF8);
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(_path) ?? ".");
+                File.WriteAllText(_path, sb.ToString(), Encoding.UTF8);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                throw new IOException("Cannot save the settings to " + _path + ": the game folder is not writable. " +
+                    "Reinstall with the latest installer, or install the game outside Program Files.", ex);
+            }
         }
 
         public string this[string key]

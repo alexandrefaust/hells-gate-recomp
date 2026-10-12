@@ -73,6 +73,11 @@ Source: "..\tools\extract-xiso\extract-xiso.exe"; DestDir: "{tmp}"; Flags: delet
 Source: "{#TuPath}"; DestDir: "{app}\game"; Flags: ignoreversion
 #endif
 
+[Dirs]
+; The launcher (not elevated) saves dantes_inferno.toml here and the game
+; writes its logs here, so users need write access under Program Files.
+Name: "{app}"; Permissions: users-modify
+
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\icon.ico"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
