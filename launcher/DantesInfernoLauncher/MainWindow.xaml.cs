@@ -506,7 +506,7 @@ namespace DantesInferno.Launcher
         {
             string exePath = PathHelper.GetGameExecutablePath(_installDir);
             string gameData = _config.GameDataRoot ?? PathHelper.GetGameDataPath(_installDir);
-            if (File.Exists(exePath) && Directory.Exists(gameData))
+            if (File.Exists(exePath) && File.Exists(Path.Combine(gameData, "default.xex")))
                 PlayStatusText.Text = LauncherLocalizer.Get(_launcherLanguage, LauncherLocalizer.PlayStatusReady);
             else
                 PlayStatusText.Text = LauncherLocalizer.Get(_launcherLanguage, LauncherLocalizer.PlayStatusMissing);
@@ -592,9 +592,11 @@ namespace DantesInferno.Launcher
             }
 
             string gameData = _config.GameDataRoot ?? PathHelper.GetGameDataPath(_installDir);
-            if (!Directory.Exists(gameData))
+            if (!File.Exists(Path.Combine(gameData, "default.xex")))
             {
-                MessageBox.Show("Game data folder was not found: " + gameData, "Missing Data", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show("default.xex was not found in the game data folder:\n" + gameData +
+                    "\n\nThe game files were not extracted from the ISO. Run the installer again and check extract-xiso.log in the install folder.",
+                    "Missing Data", MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
             }
 

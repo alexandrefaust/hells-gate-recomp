@@ -63,7 +63,7 @@ Source: "DantesInfernoLauncher\bin\Release\version.txt"; DestDir: "{app}"; Flags
 Source: "icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "banner.jpg"; DestDir: "{app}"; Flags: ignoreversion
 
-; Extracts the user's ISO into game\ after install; no game data is shipped.
+; Extracts the user's ISO into game\ after install (ExtractIso); no game data is shipped.
 Source: "..\tools\extract-xiso\extract-xiso.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 
 ; Title Update 2, needed for playable DLC such as Trials of Saint Lucia; the
@@ -84,8 +84,6 @@ Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{commondesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\icon.ico"; Tasks: desktopicon
 
 [Run]
-Filename: "{tmp}\extract-xiso.exe"; Parameters: "-x -d ""{app}\game"" -s ""{code:GetIsoPath}"""; WorkingDir: "{app}"; StatusMsg: "Extracting game data from ISO (this may take a few minutes)..."; Flags: hidewizard; Check: NeedsExtraction
-
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch Dante's Inferno Launcher"; Flags: postinstall nowait skipifsilent
 
 [InstallDelete]
@@ -99,6 +97,7 @@ Type: filesandordirs; Name: "{app}\game"
 Type: filesandordirs; Name: "{app}\logs"
 Type: files; Name: "{app}\dantes_inferno.toml"
 Type: files; Name: "{app}\version.txt"
+Type: files; Name: "{app}\extract-xiso.log"
 
 [Code]
 var
@@ -150,14 +149,9 @@ begin
     'Choose your Dante''s Inferno Xbox 360 ISO file.',
     'The installer will extract game data from this ISO into the game folder. ' +
     'If you already have game data extracted, you can skip this step.');
-  IsoPage.Add('ISO file (*.iso)|*.iso|All files (*.*)|*.*', '.iso', '');
+  IsoPage.Add('ISO file:', 'ISO files (*.iso)|*.iso|All files (*.*)|*.*', '.iso');
   IsoPage.Values[0] := '';
   IsoSizeMB := 0;
-end;
-
-function GetIsoPath(Param: string): string;
-begin
-  Result := IsoPage.Values[0];
 end;
 
 function GameDataPresent: Boolean;
@@ -241,6 +235,40 @@ begin
     Result := Result + '(skipped - game data already extracted)';
 end;
 
+{ Not a [Run] entry: Setup ignores their exit codes. Success means
+  game\default.xex exists; extract-xiso's output goes to extract-xiso.log. }
+procedure ExtractIso;
+var
+  LogPath: string;
+  Params: string;
+  ResultCode: Integer;
+begin
+  LogPath := ExpandConstant('{app}\extract-xiso.log');
+  Params := '/C ""' + ExpandConstant('{tmp}\extract-xiso.exe') + '" -x -d "' +
+    ExpandConstant('{app}\game') + '" -s "' + IsoPage.Values[0] + '" > "' + LogPath + '" 2>&1"';
+
+  WizardForm.StatusLabel.Caption := 'Extracting game data from ISO (this may take a few minutes)...';
+  WizardForm.FilenameLabel.Caption := ExtractFileName(IsoPage.Values[0]);
+  WizardForm.ProgressGauge.Style := npbstMarquee;
+  try
+    if not Exec(ExpandConstant('{cmd}'), Params, ExpandConstant('{app}'), SW_HIDE,
+        ewWaitUntilTerminated, ResultCode) then
+      ResultCode := -1;
+  finally
+    WizardForm.ProgressGauge.Style := npbstNormal;
+  end;
+  Log('extract-xiso exit code: ' + IntToStr(ResultCode));
+
+  if not GameDataPresent then
+    SuppressibleMsgBox('The game files could not be extracted from the ISO (exit code ' +
+      IntToStr(ResultCode) + ').' + #13#10#13#10 +
+      'ISO: ' + IsoPage.Values[0] + #13#10 +
+      'Details: ' + LogPath + #13#10#13#10 +
+      'Check that the file is a complete Xbox 360 disc image of Dante''s Inferno, ' +
+      'then run the installer again. Please attach extract-xiso.log when reporting this.',
+      mbError, MB_OK, IDOK);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ConfigPath: string;
@@ -248,6 +276,9 @@ var
 begin
   if CurStep = ssPostInstall then
   begin
+    if NeedsExtraction then
+      ExtractIso;
+
     { First install: default settings }
     ConfigPath := ExpandConstant('{app}\dantes_inferno.toml');
     if not FileExists(ConfigPath) then
