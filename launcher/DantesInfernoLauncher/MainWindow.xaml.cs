@@ -106,8 +106,13 @@ namespace DantesInferno.Launcher
             string configPath = PathHelper.GetGameConfigPath(_installDir);
             _config = GameConfig.Load(configPath);
 
-            if (string.IsNullOrWhiteSpace(_config.GameDataRoot))
-                _config.GameDataRoot = PathHelper.GetGameDataPath(_installDir);
+            // The installer writes an absolute path; after the folder is moved it
+            // points at the old place, so the game\ next to the launcher wins.
+            string localGameData = PathHelper.GetGameDataPath(_installDir);
+            if (string.IsNullOrWhiteSpace(_config.GameDataRoot) ||
+                (!File.Exists(Path.Combine(_config.GameDataRoot, "default.xex")) &&
+                 File.Exists(Path.Combine(localGameData, "default.xex"))))
+                _config.GameDataRoot = localGameData;
 
             _config.MigrateLegacySettings();
             _displayAspect = DisplayOptions.DetectPrimaryAspect();
