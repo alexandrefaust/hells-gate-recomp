@@ -220,14 +220,21 @@ namespace DantesInferno
             return max;
         }
 
-        public static List<FrameRateOption> BuildFrameRateOptions(DisplayAspect display)
+        // Above 60 the game logic runs faster than on the console; some
+        // encounters may misbehave, so those rates carry `experimental`.
+        public static List<FrameRateOption> BuildFrameRateOptions(DisplayAspect display, string experimental)
         {
             int max = MaxFrameRate(display);
             var options = new List<FrameRateOption>();
             foreach (int rate in FrameRates)
             {
                 if (rate <= max)
-                    options.Add(new FrameRateOption { Label = rate + " FPS", Value = rate });
+                {
+                    string label = rate + " FPS";
+                    if (rate > 60 && !string.IsNullOrEmpty(experimental))
+                        label += " " + experimental;
+                    options.Add(new FrameRateOption { Label = label, Value = rate });
+                }
             }
             return options;
         }

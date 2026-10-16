@@ -109,6 +109,17 @@ namespace DantesInferno
             ResolutionTooltip = "resolution_tooltip",
             AspectTooltip = "aspect_tooltip",
             FrameRateTooltip = "frame_rate_tooltip",
+            FrameRateExperimental = "frame_rate_experimental",
+            CheckPortable = "check_portable",
+            PortableTooltip = "portable_tooltip",
+            PortableEnabled = "portable_enabled",
+            PortableDisabled = "portable_disabled",
+            PortableFailed = "portable_failed",
+            ImportIsoTitle = "import_iso_title",
+            ImportIsoPrompt = "import_iso_prompt",
+            ImportIsoRunning = "import_iso_running",
+            ImportIsoDone = "import_iso_done",
+            ImportIsoFailed = "import_iso_failed",
             LanguageGameTooltip = "language_game_tooltip",
             LanguageLauncherTooltip = "language_launcher_tooltip",
             TuFolderTooltip = "tu_folder_tooltip",
@@ -301,6 +312,21 @@ namespace DantesInferno
                 { InstTuMissing, "WARNING: default.xexp not found in payload - TU2 will not be applied." },
                 { InstComplete, "Installation complete." },
             };
+            foreach (var entry in new Dictionary<string, string>
+            {
+                { FrameRateExperimental, "(experimental)" },
+                { CheckPortable, "Portable mode: keep saves and settings in the game folder" },
+                { PortableTooltip, "Keeps saves, settings and shader data in the 'userdata' folder next to the game instead of Documents. Existing saves are copied there when you turn it on." },
+                { PortableEnabled, "Portable mode is on. Saves and settings are kept in:\n{0}" },
+                { PortableDisabled, "Portable mode is off. The game uses Documents again. Saves made in portable mode stay in:\n{0}" },
+                { PortableFailed, "Portable mode could not be changed:\n{0}" },
+                { ImportIsoTitle, "Import Game Files" },
+                { ImportIsoPrompt, "The game files are not installed in:\n{0}\n\nSelect your Dante's Inferno Xbox 360 ISO to import them now?" },
+                { ImportIsoRunning, "Importing game files from the ISO (this takes a few minutes)..." },
+                { ImportIsoDone, "Game files imported. Press PLAY to start." },
+                { ImportIsoFailed, "Importing the ISO failed (exit code {0}). Details are in extract-xiso.log in the game folder." },
+            })
+                en[entry.Key] = entry.Value;
             _translations["en"] = en;
 
             // Spanish
@@ -439,6 +465,21 @@ namespace DantesInferno
                 { InstTuMissing, "AVISO: default.xexp no encontrado en el payload - TU2 no se aplicara." },
                 { InstComplete, "Instalacion completa." },
             };
+            foreach (var entry in new Dictionary<string, string>
+            {
+                { FrameRateExperimental, "(experimental)" },
+                { CheckPortable, "Modo portatil: guardar partidas y ajustes en la carpeta del juego" },
+                { PortableTooltip, "Guarda partidas, ajustes y datos de sombreadores en la carpeta 'userdata' junto al juego en lugar de Documentos. Las partidas existentes se copian alli al activarlo." },
+                { PortableEnabled, "Modo portatil activado. Las partidas y ajustes se guardan en:\n{0}" },
+                { PortableDisabled, "Modo portatil desactivado. El juego vuelve a usar Documentos. Las partidas del modo portatil siguen en:\n{0}" },
+                { PortableFailed, "No se pudo cambiar el modo portatil:\n{0}" },
+                { ImportIsoTitle, "Importar archivos del juego" },
+                { ImportIsoPrompt, "Los archivos del juego no estan instalados en:\n{0}\n\nSeleccionar tu ISO de Dante's Inferno de Xbox 360 para importarlos ahora?" },
+                { ImportIsoRunning, "Importando archivos del juego desde la ISO (tarda unos minutos)..." },
+                { ImportIsoDone, "Archivos del juego importados. Pulsa JUGAR para empezar." },
+                { ImportIsoFailed, "La importacion de la ISO fallo (codigo {0}). Los detalles estan en extract-xiso.log en la carpeta del juego." },
+            })
+                es[entry.Key] = entry.Value;
             _translations["es"] = es;
 
             // Portuguese
@@ -577,6 +618,21 @@ namespace DantesInferno
                 { InstTuMissing, "AVISO: default.xexp nao encontrado no payload - TU2 nao sera aplicado." },
                 { InstComplete, "Instalacao concluida." },
             };
+            foreach (var entry in new Dictionary<string, string>
+            {
+                { FrameRateExperimental, "(experimental)" },
+                { CheckPortable, "Modo portatil: manter saves e ajustes na pasta do jogo" },
+                { PortableTooltip, "Mantem saves, ajustes e dados de shaders na pasta 'userdata' ao lado do jogo em vez de Documentos. Os saves existentes sao copiados para la ao ativar." },
+                { PortableEnabled, "Modo portatil ativado. Saves e ajustes ficam em:\n{0}" },
+                { PortableDisabled, "Modo portatil desativado. O jogo volta a usar Documentos. Os saves do modo portatil continuam em:\n{0}" },
+                { PortableFailed, "Nao foi possivel alterar o modo portatil:\n{0}" },
+                { ImportIsoTitle, "Importar arquivos do jogo" },
+                { ImportIsoPrompt, "Os arquivos do jogo nao estao instalados em:\n{0}\n\nSelecionar sua ISO de Dante's Inferno do Xbox 360 para importa-los agora?" },
+                { ImportIsoRunning, "Importando arquivos do jogo da ISO (leva alguns minutos)..." },
+                { ImportIsoDone, "Arquivos do jogo importados. Clique em JOGAR para comecar." },
+                { ImportIsoFailed, "A importacao da ISO falhou (codigo {0}). Os detalhes estao em extract-xiso.log na pasta do jogo." },
+            })
+                pt[entry.Key] = entry.Value;
             _translations["pt"] = pt;
 
             // French
@@ -715,6 +771,21 @@ namespace DantesInferno
                 { InstTuMissing, "AVERTISSEMENT : default.xexp introuvable dans le payload - TU2 ne sera pas applique." },
                 { InstComplete, "Installation terminee." },
             };
+            foreach (var entry in new Dictionary<string, string>
+            {
+                { FrameRateExperimental, "(experimental)" },
+                { CheckPortable, "Mode portable : garder sauvegardes et parametres dans le dossier du jeu" },
+                { PortableTooltip, "Garde les sauvegardes, les parametres et les donnees de shaders dans le dossier 'userdata' a cote du jeu au lieu de Documents. Les sauvegardes existantes y sont copiees a l'activation." },
+                { PortableEnabled, "Mode portable active. Sauvegardes et parametres sont dans :\n{0}" },
+                { PortableDisabled, "Mode portable desactive. Le jeu utilise de nouveau Documents. Les sauvegardes du mode portable restent dans :\n{0}" },
+                { PortableFailed, "Impossible de changer le mode portable :\n{0}" },
+                { ImportIsoTitle, "Importer les fichiers du jeu" },
+                { ImportIsoPrompt, "Les fichiers du jeu ne sont pas installes dans :\n{0}\n\nChoisir votre ISO Xbox 360 de Dante's Inferno pour les importer maintenant ?" },
+                { ImportIsoRunning, "Importation des fichiers du jeu depuis l'ISO (quelques minutes)..." },
+                { ImportIsoDone, "Fichiers du jeu importes. Cliquez sur JOUER pour commencer." },
+                { ImportIsoFailed, "L'importation de l'ISO a echoue (code {0}). Details dans extract-xiso.log dans le dossier du jeu." },
+            })
+                fr[entry.Key] = entry.Value;
             _translations["fr"] = fr;
 
             // Italian
@@ -853,6 +924,21 @@ namespace DantesInferno
                 { InstTuMissing, "AVVISO: default.xexp non trovato nel payload - TU2 non verra applicato." },
                 { InstComplete, "Installazione completata." },
             };
+            foreach (var entry in new Dictionary<string, string>
+            {
+                { FrameRateExperimental, "(sperimentale)" },
+                { CheckPortable, "Modalita portatile: salvataggi e impostazioni nella cartella del gioco" },
+                { PortableTooltip, "Tiene salvataggi, impostazioni e dati degli shader nella cartella 'userdata' accanto al gioco invece che in Documenti. I salvataggi esistenti vengono copiati li quando la attivi." },
+                { PortableEnabled, "Modalita portatile attiva. Salvataggi e impostazioni sono in:\n{0}" },
+                { PortableDisabled, "Modalita portatile disattivata. Il gioco usa di nuovo Documenti. I salvataggi della modalita portatile restano in:\n{0}" },
+                { PortableFailed, "Impossibile cambiare la modalita portatile:\n{0}" },
+                { ImportIsoTitle, "Importa file del gioco" },
+                { ImportIsoPrompt, "I file del gioco non sono installati in:\n{0}\n\nSelezionare la ISO Xbox 360 di Dante's Inferno per importarli ora?" },
+                { ImportIsoRunning, "Importazione dei file del gioco dalla ISO (qualche minuto)..." },
+                { ImportIsoDone, "File del gioco importati. Premi GIOCA per iniziare." },
+                { ImportIsoFailed, "Importazione della ISO non riuscita (codice {0}). Dettagli in extract-xiso.log nella cartella del gioco." },
+            })
+                it[entry.Key] = entry.Value;
             _translations["it"] = it;
         }
 

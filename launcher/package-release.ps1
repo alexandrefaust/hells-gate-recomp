@@ -57,6 +57,12 @@ foreach ($f in $gameFiles) {
     }
 }
 
+# Releases never carry the development cheats (CMake DANTESINFERNO_DEV_CHEATS).
+$exeText = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes((Join-Path $GameBuildDir "dantes_inferno.exe")))
+if ($exeText.Contains("dante_cheat_god")) {
+    Write-Error "dantes_inferno.exe was built with DANTESINFERNO_DEV_CHEATS. Reconfigure with -DDANTESINFERNO_DEV_CHEATS=OFF and rebuild."
+}
+
 $ffxVkDll = Join-Path $GameBuildDir "thirdparty\rexglue-sdk\out\win-amd64\amd_fidelityfx_vk.dll"
 if (Test-Path $ffxVkDll) {
     Write-Host "Found amd_fidelityfx_vk.dll at $ffxVkDll"
@@ -102,6 +108,33 @@ New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 Write-Host "Compiling Inno Setup installer..."
 & $iscc "/O$OutputDir" "/DGameBuildDir=$GameBuildDir" (Join-Path $root "installer.iss") 2>&1
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed." }
+
+# Portable zip: the installed files without an installer (no admin rights);
+# portable.txt keeps saves next to the game and the launcher imports the ISO.
+$zipName = "DantesInferno-$Version-portable.zip"
+$staging = Join-Path ([System.IO.Path]::GetTempPath()) "DantesInfernoPortable-$Version"
+if (Test-Path $staging) { Remove-Item $staging -Recurse -Force }
+New-Item -ItemType Directory -Path (Join-Path $staging "game") -Force | Out-Null
+foreach ($f in $gameFiles) { Copy-Item (Join-Path $GameBuildDir $f) $staging }
+if (Test-Path $ffxVkDll) { Copy-Item $ffxVkDll $staging }
+$launcherBin = Join-Path $root "DantesInfernoLauncher\bin\$Configuration"
+foreach ($f in @("DantesInfernoLauncher.exe", "DantesInferno.Shared.dll", "version.txt")) {
+    Copy-Item (Join-Path $launcherBin $f) $staging
+}
+Copy-Item (Join-Path $root "icon.ico"), (Join-Path $root "banner.jpg"), $extractXiso $staging
+if (Test-Path $tuDst) { Copy-Item $tuDst (Join-Path $staging "game") }
+$shaderList = Join-Path $root "..\shader-list\dante_pipelines.bin"
+if (Test-Path $shaderList) {
+    Copy-Item $shaderList $staging
+} else {
+    Write-Warning "shader-list\dante_pipelines.bin not found - this release has no shader precompile list."
+}
+[System.IO.File]::WriteAllText((Join-Path $staging "portable.txt"),
+    "Portable mode: saves and settings are kept in the userdata folder next to this file.`r`n" +
+    "Delete this file (or untick Portable mode in the launcher) to use Documents again.`r`n", $utf8NoBom)
+Compress-Archive -Path (Join-Path $staging "*") -DestinationPath (Join-Path $OutputDir $zipName) -CompressionLevel Optimal
+Remove-Item $staging -Recurse -Force
+Write-Host "Portable zip created at: $OutputDir\$zipName"
 
 # Debug symbols of this release (not shipped): map crash-log addresses to functions.
 $symbolsDir = [System.IO.Path]::GetFullPath((Join-Path $root "..\release-symbols\$Version"))

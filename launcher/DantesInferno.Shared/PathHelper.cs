@@ -49,5 +49,27 @@ namespace DantesInferno
         {
             return Path.Combine(installDirectory, "game", "default.xexp");
         }
+
+        // portable.txt next to the game keeps saves and the cache in userdata\
+        // there instead of Documents (src/user_paths.cpp).
+        public static string GetPortableMarkerPath(string installDirectory)
+        {
+            return Path.Combine(installDirectory, "portable.txt");
+        }
+
+        public static string GetPortableDataPath(string installDirectory)
+        {
+            return Path.Combine(installDirectory, "userdata");
+        }
+
+        public static string GetDocumentsDataPath()
+        {
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "dantes_inferno");
+        }
+
+        public static string GetExtractXisoPath(string installDirectory)
+        {
+            return Path.Combine(installDirectory, "extract-xiso.exe");
+        }
     }
 }

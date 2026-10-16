@@ -68,12 +68,21 @@ Source: "banner.jpg"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Extracts the user's ISO into game\ after install (ExtractIso); no game data is shipped.
 Source: "..\tools\extract-xiso\extract-xiso.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
+; The launcher's ISO import, when game\default.xex is missing.
+Source: "..\tools\extract-xiso\extract-xiso.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Title Update 2, needed for playable DLC such as Trials of Saint Lucia; the
 ; game applies default.xexp found next to default.xex.
 #define TuPath GameBuildDir + "\default.xexp"
 #if FileExists(TuPath)
 Source: "{#TuPath}"; DestDir: "{app}\game"; Flags: ignoreversion
+#endif
+
+; Recorded shaders and pipelines (tools\pipeline_storage_merge.py), built at
+; launch so effects don't compile mid-game.
+#define ShaderListPath SourcePath + "\..\shader-list\dante_pipelines.bin"
+#if FileExists(ShaderListPath)
+Source: "{#ShaderListPath}"; DestDir: "{app}"; Flags: ignoreversion
 #endif
 
 [Dirs]

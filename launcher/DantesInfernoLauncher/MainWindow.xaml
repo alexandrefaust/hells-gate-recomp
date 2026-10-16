@@ -281,6 +281,7 @@
                                     </Grid>
 
                                     <CheckBox x:Name="LoggingEnabledCheck" Content="Detailed logging (troubleshooting; larger log files)" IsChecked="False" Margin="0,3" />
+                                    <CheckBox x:Name="PortableCheck" Content="Portable mode: keep saves and settings in the game folder" Margin="0,3" />
                                 </StackPanel>
                             </GroupBox>
 

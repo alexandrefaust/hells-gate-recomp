@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Media.Imaging;
@@ -23,6 +24,9 @@ namespace DantesInferno.Launcher
         private const string IssuesUrl = "https://github.com/florinp93/hells-gate-recomp/issues";
         // Texture filtering choices; index 0 ("Default") leaves the game's own.
         private static readonly int[] AnisoLevels = { 0, 1, 2, 4, 8, 16 };
+
+        private string Lt(string key) => LauncherLocalizer.Get(_launcherLanguage, key);
+        private string Lf(string key, params object[] args) => LauncherLocalizer.Get(_launcherLanguage, key, args);
 
         public MainWindow()
         {
@@ -135,7 +139,8 @@ namespace DantesInferno.Launcher
             AspectCombo.SelectedValuePath = "Key";
             AspectCombo.SelectedValue = _config.Aspect;
 
-            FrameRateCombo.ItemsSource = DisplayOptions.BuildFrameRateOptions(_displayAspect);
+            FrameRateCombo.ItemsSource = DisplayOptions.BuildFrameRateOptions(
+                _displayAspect, Lt(LauncherLocalizer.FrameRateExperimental));
             FrameRateCombo.DisplayMemberPath = "Label";
             FrameRateCombo.SelectedValuePath = "Value";
             FrameRateCombo.SelectedValue = DisplayOptions.FrameRateFor(_config, _displayAspect);
@@ -156,6 +161,7 @@ namespace DantesInferno.Launcher
             PopulateGlyphCombo(_config.GlyphFamily);
 
             LoggingEnabledCheck.IsChecked = _config.DetailedLogging;
+            PortableCheck.IsChecked = File.Exists(PathHelper.GetPortableMarkerPath(_installDir));
 
             PopulateLanguageCombo();
             PopulateLauncherLanguageCombo();
@@ -312,6 +318,8 @@ namespace DantesInferno.Launcher
             GlyphFamilyCombo.ToolTip = Lt(LauncherLocalizer.GlyphTooltip);
             PopulateGlyphCombo(GlyphFamilyCombo.SelectedValue as string ?? _config.GlyphFamily);
             LoggingEnabledCheck.Content = Lt(LauncherLocalizer.CheckLogging);
+            PortableCheck.Content = Lt(LauncherLocalizer.CheckPortable);
+            PortableCheck.ToolTip = Lt(LauncherLocalizer.PortableTooltip);
             SettingsAppliedNoteText.Text = Lt(LauncherLocalizer.SettingsAppliedNote);
             ApplyRecommendedButton.Content = Lt(LauncherLocalizer.ResetToRecommended);
             SaveSettingsButton.Content = Lt(LauncherLocalizer.SaveSettings);
@@ -573,7 +581,140 @@ namespace DantesInferno.Launcher
                 _config.UserLanguage = langId;
 
             _config["dlc_source_path"] = PathHelper.GetDlcPath(_installDir);
-            return true;
+            return ApplyPortableMode();
+        }
+
+        // portable.txt on or off, from the checkbox. Turning it on copies the
+        // saves from Documents when the game folder has none yet.
+        private bool ApplyPortableMode()
+        {
+            bool want = PortableCheck.IsChecked ?? false;
+            string marker = PathHelper.GetPortableMarkerPath(_installDir);
+            if (want == File.Exists(marker))
+                return true;
+            string portableData = PathHelper.GetPortableDataPath(_installDir);
+            try
+            {
+                if (want)
+                {
+                    string documents = PathHelper.GetDocumentsDataPath();
+                    if (Directory.Exists(documents) && !Directory.Exists(portableData))
+                        CopyDirectory(documents, portableData);
+                    File.WriteAllText(marker,
+                        "Portable mode: saves and settings are kept in the userdata folder next to this file.\r\n" +
+                        "Delete this file (or untick Portable mode in the launcher) to use Documents again.\r\n");
+                    MessageBox.Show(Lf(LauncherLocalizer.PortableEnabled, portableData), "Dante's Inferno",
+                        MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                else
+                {
+                    File.Delete(marker);
+                    MessageBox.Show(Lf(LauncherLocalizer.PortableDisabled, portableData), "Dante's Inferno",
+                        MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(Lf(LauncherLocalizer.PortableFailed, ex.Message), "Dante's Inferno",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+                PortableCheck.IsChecked = File.Exists(marker);
+                return false;
+            }
+        }
+
+        private static void CopyDirectory(string source, string destination)
+        {
+            Directory.CreateDirectory(destination);
+            foreach (string file in Directory.GetFiles(source))
+                File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), true);
+            foreach (string dir in Directory.GetDirectories(source))
+                CopyDirectory(dir, Path.Combine(destination, Path.GetFileName(dir)));
+        }
+
+        // The portable zip has no installer: game\ is filled from the user's ISO
+        // with the bundled extract-xiso, like the installer does.
+        private void OfferIsoImport(string gameData)
+        {
+            string tool = PathHelper.GetExtractXisoPath(_installDir);
+            if (!File.Exists(tool))
+            {
+                MessageBox.Show("default.xex was not found in the game data folder:\n" + gameData +
+                    "\n\nThe game files were not extracted from the ISO. Run the installer again and check extract-xiso.log in the install folder.",
+                    "Missing Data", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+            if (MessageBox.Show(Lf(LauncherLocalizer.ImportIsoPrompt, gameData), Lt(LauncherLocalizer.ImportIsoTitle),
+                    MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+                return;
+            var dialog = new Microsoft.Win32.OpenFileDialog
+            {
+                Title = Lt(LauncherLocalizer.ImportIsoTitle),
+                Filter = "Xbox 360 ISO (*.iso)|*.iso|All files (*.*)|*.*",
+            };
+            if (dialog.ShowDialog(this) != true)
+                return;
+            string iso = dialog.FileName;
+            string logPath = Path.Combine(gameData, "extract-xiso.log");
+            PlayButton.IsEnabled = false;
+            PlayNoteText.Text = Lt(LauncherLocalizer.ImportIsoRunning);
+
+            Task.Factory.StartNew(new Action(() =>
+            {
+                int exitCode = -1;
+                var output = new StringBuilder();
+                try
+                {
+                    Directory.CreateDirectory(gameData);
+                    var psi = new ProcessStartInfo
+                    {
+                        FileName = tool,
+                        Arguments = "-x -d \"" + gameData + "\" -s \"" + iso + "\"",
+                        WorkingDirectory = _installDir,
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                    };
+                    using (var process = new Process { StartInfo = psi })
+                    {
+                        DataReceivedEventHandler append = (s, args) =>
+                        {
+                            if (args.Data != null)
+                                lock (output) output.AppendLine(args.Data);
+                        };
+                        process.OutputDataReceived += append;
+                        process.ErrorDataReceived += append;
+                        process.Start();
+                        process.BeginOutputReadLine();
+                        process.BeginErrorReadLine();
+                        process.WaitForExit();
+                        exitCode = process.ExitCode;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    lock (output) output.AppendLine(ex.ToString());
+                }
+                try
+                {
+                    lock (output) File.WriteAllText(logPath, output.ToString());
+                }
+                catch { }
+                bool imported = File.Exists(Path.Combine(gameData, "default.xex"));
+                Dispatcher.Invoke(new Action(() =>
+                {
+                    PlayButton.IsEnabled = true;
+                    PlayNoteText.Text = imported ? Lt(LauncherLocalizer.ImportIsoDone) : "";
+                    if (!imported)
+                    {
+                        MessageBox.Show(Lf(LauncherLocalizer.ImportIsoFailed, exitCode), Lt(LauncherLocalizer.ImportIsoTitle),
+                            MessageBoxButton.OK, MessageBoxImage.Error);
+                    }
+                    PopulateLanguageCombo();
+                    RefreshPlayStatus();
+                }));
+            }));
         }
 
         private void PlayButton_Click(object sender, RoutedEventArgs e)
@@ -594,9 +735,7 @@ namespace DantesInferno.Launcher
             string gameData = _config.GameDataRoot ?? PathHelper.GetGameDataPath(_installDir);
             if (!File.Exists(Path.Combine(gameData, "default.xex")))
             {
-                MessageBox.Show("default.xex was not found in the game data folder:\n" + gameData +
-                    "\n\nThe game files were not extracted from the ISO. Run the installer again and check extract-xiso.log in the install folder.",
-                    "Missing Data", MessageBoxButton.OK, MessageBoxImage.Error);
+                OfferIsoImport(gameData);
                 return;
             }
 
@@ -846,6 +985,18 @@ namespace DantesInferno.Launcher
             {
                 MessageBox.Show("No update has been checked yet. Click \"Check for Updates\" first.",
                     "No Update", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            // Unpacked from the portable zip (no uninstaller): the installer would
+            // install a second copy, so the new zip is downloaded by hand.
+            if (!File.Exists(Path.Combine(_installDir, "unins000.exe")) && !string.IsNullOrEmpty(_pendingUpdate.HtmlUrl))
+            {
+                MessageBox.Show($"A new version ({_pendingUpdate.TagName}) is available.\n\n" +
+                    "This copy was unpacked from the portable zip: download the new portable zip from the release page " +
+                    "and extract it over this folder (your saves and settings are kept).",
+                    "Update Available", MessageBoxButton.OK, MessageBoxImage.Information);
+                Process.Start(new ProcessStartInfo(_pendingUpdate.HtmlUrl) { UseShellExecute = true });
                 return;
             }
 
