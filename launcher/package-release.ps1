@@ -132,7 +132,10 @@ if (Test-Path $shaderList) {
 [System.IO.File]::WriteAllText((Join-Path $staging "portable.txt"),
     "Portable mode: saves and settings are kept in the userdata folder next to this file.`r`n" +
     "Delete this file (or untick Portable mode in the launcher) to use Documents again.`r`n", $utf8NoBom)
-Compress-Archive -Path (Join-Path $staging "*") -DestinationPath (Join-Path $OutputDir $zipName) -CompressionLevel Optimal
+# Windows tar writes standard zip paths (Compress-Archive in PowerShell 5.1 writes
+# backslashes, which other unzip tools keep in the file name).
+& (Join-Path $env:SystemRoot "System32\tar.exe") -a -c -f (Join-Path $OutputDir $zipName) -C $staging (Get-ChildItem $staging).Name
+if ($LASTEXITCODE -ne 0) { throw "Creating $zipName failed." }
 Remove-Item $staging -Recurse -Force
 Write-Host "Portable zip created at: $OutputDir\$zipName"
 
