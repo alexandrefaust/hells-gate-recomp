@@ -11,6 +11,9 @@ endif()
 
 option(DANTESINFERNO_NATIVE_RENDERER "Build native DiligentCore/Vulkan renderer" ON)
 option(DANTESINFERNO_FIDELITYFX "Enable AMD FidelityFX present effects (CAS/FSR)" ON)
+# God mode / one-hit kills for recording playthroughs; never in releases
+# (package-release.ps1 refuses an exe that has them).
+option(DANTESINFERNO_DEV_CHEATS "Build the development cheats (src/damage_hooks.cpp)" OFF)
 
 if(DANTESINFERNO_FIDELITYFX)
     set(REXGLUE_ENABLE_FIDELITYFX ON CACHE BOOL "Enable AMD FidelityFX integration" FORCE)
@@ -36,11 +39,15 @@ endif()
 
 set(DANTESINFERNO_SOURCES
     src/main.cpp
+    src/damage_hooks.cpp
     src/frame_rate_hooks.cpp
+    src/timer_resolution.cpp
+    src/user_paths.cpp
     src/overlay/achievement_sound.cpp
     src/overlay/achievement_ui.cpp
     src/overlay/fps_overlay.cpp
     src/overlay/overlay_style.cpp
+    src/overlay/shader_progress.cpp
     # D3D hooks: strong overrides of the generated weak aliases, so in the exe.
     src/renderer/d3d_hooks.cpp
     src/renderer/renderdoc_capture.cpp
@@ -59,6 +66,9 @@ else()
 endif()
 
 rexglue_setup_target(dantes_inferno)
+if(DANTESINFERNO_DEV_CHEATS)
+    target_compile_definitions(dantes_inferno PRIVATE DANTESINFERNO_DEV_CHEATS)
+endif()
 
 target_include_directories(dantes_inferno PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/rexglue-sdk/thirdparty/imgui"
@@ -101,6 +111,7 @@ if(DANTESINFERNO_NATIVE_RENDERER)
     add_library(dante_renderer STATIC
         src/renderer/renderer.cpp
         src/renderer/draw_renderer.cpp
+        src/renderer/pipeline_storage.cpp
         src/renderer/png_dump.cpp
         src/renderer/button_glyphs.cpp
         src/renderer/shader_cache.cpp

@@ -7,12 +7,16 @@
 
 #include "shader_cache.h"
 
+#include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <vector>
 
 namespace Diligent {
 struct IRenderDevice;
 struct IDeviceContext;
+struct IPipelineStateCache;
 struct ITextureView;
 }  // namespace Diligent
 
@@ -22,7 +26,17 @@ class RegisterFile;
 
 namespace renderer {
 
+class PipelineStorage;
 class TextureCache;
+struct StoredDraw;
+
+// What a stored pipeline needs from the current device and resolution.
+struct PipelineTargets {
+  float frame_scale = 1.0f;   // max(scale_x, scale_y) of frame render targets
+  float shadow_scale = 1.0f;  // of shadow maps
+  // Guest depth format -> host Diligent::TEXTURE_FORMAT.
+  std::function<uint32_t(uint32_t guest_format)> depth_format;
+};
 
 struct DrawTargets {
   Diligent::ITextureView* color[4] = {};
@@ -35,6 +49,10 @@ struct DrawTargets {
   uint32_t height = 0;
   float scale_x = 1.0f;
   float scale_y = 1.0f;
+  bool shadow_map = false;  // square depth-only target (ShadowMapScale)
+  // Guest surface formats, for PipelineStorage.
+  uint32_t guest_color_format[4] = {};
+  uint32_t guest_depth_format = 0;
 };
 
 class DrawRenderer {
@@ -54,6 +72,18 @@ class DrawRenderer {
 
   // Guest frame number (texture content checks run once per frame).
   void SetFrame(uint64_t frame);
+
+  // Records each new pipeline (null: none).
+  void SetStorage(PipelineStorage* storage);
+
+  // Vulkan pipeline cache for every pipeline created (null: none).
+  void SetPipelineCache(Diligent::IPipelineStateCache* cache);
+
+  // Creates the stored pipelines whose shaders `shaders` has built, on
+  // `threads` threads; not concurrently with Draw. `done` counts pipelines.
+  void Precompile(const std::vector<StoredDraw>& draws, const ShaderCache& shaders,
+                  const PipelineTargets& targets, uint32_t threads,
+                  const std::atomic<bool>& cancel, std::atomic<uint32_t>& done);
 
   void LogStats();
 

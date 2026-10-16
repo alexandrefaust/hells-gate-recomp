@@ -1,6 +1,8 @@
 #include "draw_renderer.h"
 
+#include "guest_gpu_state.h"
 #include "guest_memory.h"
+#include "pipeline_storage.h"
 #include "render_stats.h"
 #include "texture_cache.h"
 
@@ -9,6 +11,7 @@
 #include "Graphics/GraphicsEngine/interface/BufferView.h"
 #include "Graphics/GraphicsEngine/interface/DeviceContext.h"
 #include "Graphics/GraphicsEngine/interface/PipelineState.h"
+#include "Graphics/GraphicsEngine/interface/PipelineStateCache.h"
 #include "Graphics/GraphicsEngine/interface/RenderDevice.h"
 #include "Graphics/GraphicsEngine/interface/Sampler.h"
 #include "Graphics/GraphicsEngine/interface/ShaderResourceBinding.h"
@@ -50,25 +53,15 @@ using Translator = rg::SpirvShaderTranslator;
 
 constexpr uint32_t kIndexRingSize = 32u * 1024 * 1024;
 
-struct PipelineKey {
-  uint64_t vertex_key;
-  uint64_t pixel_key;
-  uint32_t topology;
-  uint32_t color_format[4];
-  uint32_t color_count;
-  uint32_t depth_format;
-  uint32_t color_mask;
-  uint32_t depth_enable;
-  uint32_t depth_write;
-  uint32_t depth_func;
-  uint32_t blend[4];          // RB_BLENDCONTROL0-3 & 0x1FFF1FFF, 0 = disabled
-  uint32_t stencil_control;   // RB_DEPTHCONTROL stencil bits, 0 = disabled
-  uint32_t stencil_masks;     // read mask | write mask << 8
-  uint32_t cull;              // bit 0 cull front, bit 1 cull back, bit 2 front face clockwise
-  int32_t depth_bias;         // constant depth bias (host units)
-  uint32_t depth_bias_slope;  // slope-scaled depth bias (float bits)
-  bool operator==(const PipelineKey&) const = default;
-};
+static_assert([] {
+  uint32_t count = 0;
+  for (uint32_t i = 0; i < kStoredContextRanges; ++i) {
+    if (kShadowRanges[i].reg >= 0x4000) return false;
+    count += kShadowRanges[i].count;
+  }
+  return count == kStoredContextRegisters && kShadowRanges[kStoredContextRanges].reg >= 0x4000;
+}(), "GuestDrawState must hold exactly the context ranges of kShadowRanges");
+
 struct PipelineKeyHash {
   size_t operator()(const PipelineKey& k) const { return XXH3_64bits(&k, sizeof(k)); }
 };
@@ -211,6 +204,8 @@ struct DrawRenderer::Impl {
   dl::RefCntAutoPtr<dl::ISampler> dummy_sampler;
 
   std::unordered_map<PipelineKey, Pipeline, PipelineKeyHash> pipelines;
+  PipelineStorage* storage = nullptr;
+  dl::IPipelineStateCache* pso_cache = nullptr;
 
   uint32_t draws = 0, skipped_other = 0, pipeline_failures = 0;
   uint32_t skipped_targets = 0, skipped_viewport = 0, skipped_scissor = 0, skipped_pipeline = 0;
@@ -220,7 +215,14 @@ struct DrawRenderer::Impl {
   dl::IBuffer* CreateUniform(const char* name, uint32_t size);
   // always_check: data rewritten within a frame (inline vertices in the ring).
   void Upload(const uint8_t* base, uint32_t address, uint32_t size, bool always_check = false);
-  Pipeline* GetPipeline(const PipelineKey& key, const TranslatedShaders& shaders);
+  // record: the draw's pipeline as stored, written when the pipeline is new.
+  Pipeline* GetPipeline(const PipelineKey& key, const TranslatedShaders& shaders,
+                        const StoredDraw* record = nullptr);
+  // Any thread.
+  dl::RefCntAutoPtr<dl::IPipelineState> CreatePso(const PipelineKey& key,
+                                                  const TranslatedShaders& shaders);
+  // Render thread: resource bindings of a created pipeline.
+  void FinishPipeline(Pipeline& p, const TranslatedShaders& shaders);
   void BindStatic(Pipeline& pipeline, dl::SHADER_TYPE stage);
 };
 
@@ -366,11 +368,29 @@ void DrawRenderer::Impl::BindStatic(Pipeline& pipeline, dl::SHADER_TYPE stage) {
 }
 
 Pipeline* DrawRenderer::Impl::GetPipeline(const PipelineKey& key,
-                                          const TranslatedShaders& shaders) {
+                                          const TranslatedShaders& shaders,
+                                          const StoredDraw* record) {
   auto it = pipelines.find(key);
   if (it != pipelines.end()) return it->second.pso ? &it->second : nullptr;
+  if (storage && record) storage->AddPipeline(*record);
   Pipeline& p = pipelines[key];
+  p.pso = CreatePso(key, shaders);
+  ++g_render_stats.pipelines_created;
+  if (!p.pso) {
+    if (++pipeline_failures <= 8) {
+      REXLOG_WARN("NATIVE-DRAW: pipeline failed VS {:016X} PS {:016X} topology {}", key.vertex_key,
+                  key.pixel_key, key.topology);
+    }
+    return nullptr;
+  }
+  FinishPipeline(p, shaders);
+  return &p;
+}
+
+dl::RefCntAutoPtr<dl::IPipelineState> DrawRenderer::Impl::CreatePso(
+    const PipelineKey& key, const TranslatedShaders& shaders) {
   dl::GraphicsPipelineStateCreateInfo ci;
+  ci.pPSOCache = pso_cache;
   ci.PSODesc.Name = "XenosDraw";
   ci.PSODesc.PipelineType = dl::PIPELINE_TYPE_GRAPHICS;
   // Dynamic: textures and samplers change per draw.
@@ -427,19 +447,15 @@ Pipeline* DrawRenderer::Impl::GetPipeline(const PipelineKey& key,
                                 StencilOp(dc.stencilzpass_bf), Compare(dc.stencilfunc_bf)}
             : ds.FrontFace;
   }
-  device->CreateGraphicsPipelineState(ci, &p.pso);
-  ++g_render_stats.pipelines_created;
-  if (!p.pso) {
-    if (++pipeline_failures <= 8) {
-      REXLOG_WARN("NATIVE-DRAW: pipeline failed VS {:016X} PS {:016X} topology {}", key.vertex_key,
-                  key.pixel_key, key.topology);
-    }
-    return nullptr;
-  }
+  dl::RefCntAutoPtr<dl::IPipelineState> pso;
+  device->CreateGraphicsPipelineState(ci, &pso);
+  return pso;
+}
+
+void DrawRenderer::Impl::FinishPipeline(Pipeline& p, const TranslatedShaders& shaders) {
   p.pso->CreateShaderResourceBinding(&p.srb, true);
   BindStatic(p, dl::SHADER_TYPE_VERTEX);
   if (shaders.pixel) BindStatic(p, dl::SHADER_TYPE_PIXEL);
-  return &p;
 }
 
 DrawRenderer::DrawRenderer(dl::IRenderDevice* device, dl::IDeviceContext* context,
@@ -454,6 +470,67 @@ DrawRenderer::DrawRenderer(dl::IRenderDevice* device, dl::IDeviceContext* contex
 DrawRenderer::~DrawRenderer() = default;
 
 void DrawRenderer::SetFrame(uint64_t frame) { impl_->frame = frame; }
+
+void DrawRenderer::SetStorage(PipelineStorage* storage) { impl_->storage = storage; }
+
+void DrawRenderer::SetPipelineCache(dl::IPipelineStateCache* cache) { impl_->pso_cache = cache; }
+
+void DrawRenderer::Precompile(const std::vector<StoredDraw>& draws, const ShaderCache& shaders,
+                              const PipelineTargets& targets, uint32_t threads,
+                              const std::atomic<bool>& cancel, std::atomic<uint32_t>& done) {
+  Impl& m = *impl_;
+  struct Built {
+    bool ready = false;  // shaders built, key derived
+    PipelineKey key{};
+    TranslatedShaders shaders;
+    dl::RefCntAutoPtr<dl::IPipelineState> pso;
+  };
+  std::vector<Built> built(draws.size());
+  RunParallel(draws.size(), threads, [&](size_t i, uint32_t) {
+    const StoredPipeline& p = draws[i].pipeline;
+    Built& b = built[i];
+    // Records of another key derivation would need deriving again from
+    // their GuestDrawState; skipped until that changes.
+    bool current = p.key_version == kPipelineKeyVersion &&
+                   p.modification_version == Translator::Modification::kVersion;
+    if (!cancel && current &&
+        shaders.Find(p.vertex_hash, p.vertex_modification, b.shaders.vertex,
+                     b.shaders.vertex_info) &&
+        (!p.pixel_hash || shaders.Find(p.pixel_hash, p.pixel_modification, b.shaders.pixel,
+                                       b.shaders.pixel_info))) {
+      // The key as Draw derives it on this device and at this resolution.
+      b.ready = true;
+      b.key = p.key;
+      b.key.vertex_key = ShaderKey(p.vertex_hash, p.vertex_modification);
+      b.key.pixel_key = p.pixel_hash ? ShaderKey(p.pixel_hash, p.pixel_modification) : 0;
+      b.key.depth_format = p.key.depth_format ? targets.depth_format(p.key.depth_format - 1) : 0;
+      if (p.key.depth_format) {
+        float slope;
+        std::memcpy(&slope, &p.key.depth_bias_slope, sizeof(float));
+        float scale = (p.flags & kStoredPipelineShadowMap) ? targets.shadow_scale
+                                                           : targets.frame_scale;
+        slope *= xenos::kPolygonOffsetScaleSubpixelUnit * scale;
+        std::memcpy(&b.key.depth_bias_slope, &slope, sizeof(float));
+      }
+      if (!m.pipelines.count(b.key)) b.pso = m.CreatePso(b.key, b.shaders);
+    }
+    ++done;
+  });
+  uint32_t created = 0, failed = 0;
+  for (Built& b : built) {
+    if (!b.ready || m.pipelines.count(b.key)) continue;
+    if (!b.pso) {
+      ++failed;
+      continue;
+    }
+    Pipeline& p = m.pipelines[b.key];
+    p.pso = b.pso;
+    m.FinishPipeline(p, b.shaders);
+    ++created;
+  }
+  REXLOG_INFO("NATIVE-DRAW: precompiled {} of {} stored pipelines ({} failed)", created,
+              draws.size(), failed);
+}
 
 bool DrawRenderer::Draw(const rg::RegisterFile& regs, const TranslatedShaders& shaders,
                         const DrawTargets& targets, const uint8_t* base, bool log,
@@ -780,6 +857,7 @@ bool DrawRenderer::Draw(const rg::RegisterFile& regs, const TranslatedShaders& s
     key.cull = (mode_cntl.cull_front ? 1u : 0u) | (mode_cntl.cull_back ? 2u : 0u) |
                (mode_cntl.face ? 4u : 0u);
   }
+  float unscaled_slope = 0.0f;
   if (targets.depth) {
     float slope = 0.0f, constant = 0.0f;
     rg::draw_util::GetPreferredFacePolygonOffset(regs, rg::draw_util::IsPrimitivePolygonal(regs),
@@ -788,11 +866,43 @@ bool DrawRenderer::Draw(const rg::RegisterFile& regs, const TranslatedShaders& s
         regs.Get<reg::RB_DEPTH_INFO>().depth_format == xenos::DepthRenderTargetFormat::kD24S8
             ? rg::draw_util::kD3D10PolygonOffsetFactorUnorm24
             : rg::draw_util::kD3D10PolygonOffsetFactorFloat24;
+    unscaled_slope = slope;
     slope *= xenos::kPolygonOffsetScaleSubpixelUnit * std::max(scale_x, scale_y);
     key.depth_bias = int32_t(std::lround(constant));
     std::memcpy(&key.depth_bias_slope, &slope, sizeof(float));
   }
-  Pipeline* pipeline = m.GetPipeline(key, shaders);
+  // The pipeline in guest terms, recorded the first time it is created.
+  StoredDraw record{};
+  if (m.storage) {
+    StoredPipeline& p = record.pipeline;
+    p.vertex_hash = shaders.vertex_hash;
+    p.vertex_modification = shaders.vertex_modification;
+    p.pixel_hash = shaders.pixel_info ? shaders.pixel_hash : 0;
+    p.pixel_modification = shaders.pixel_info ? shaders.pixel_modification : 0;
+    p.key = key;
+    p.key.vertex_key = 0;
+    p.key.pixel_key = 0;
+    p.key.depth_format = targets.depth ? targets.guest_depth_format + 1 : 0;
+    std::memcpy(&p.key.depth_bias_slope, &unscaled_slope, sizeof(float));
+    p.flags = targets.shadow_map ? kStoredPipelineShadowMap : 0;
+    p.key_version = kPipelineKeyVersion;
+    p.modification_version = Translator::Modification::kVersion;
+    GuestDrawState& g = record.state;
+    uint32_t index = 0;
+    for (uint32_t r = 0; r < kStoredContextRanges; ++r) {
+      for (uint32_t i = 0; i < kShadowRanges[r].count; ++i) {
+        g.registers[index++] = regs.values[kShadowRanges[r].reg + i];
+      }
+    }
+    g.draw_initiator = initiator.value & 0xFFFF;
+    for (uint32_t i = 0; i < targets.color_count; ++i) {
+      g.color_formats[i] = targets.guest_color_format[i];
+    }
+    g.color_count = targets.color_count;
+    g.depth_format = p.key.depth_format;
+    g.flags = p.flags;
+  }
+  Pipeline* pipeline = m.GetPipeline(key, shaders, m.storage ? &record : nullptr);
   if (!pipeline) {
     ++m.skipped_pipeline;
     return false;

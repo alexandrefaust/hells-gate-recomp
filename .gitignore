@@ -95,6 +95,8 @@ launcher-release/
 alpha-release/
 beta-release/
 tester-release/
+# Recorded shader/pipeline list (contains game shader microcode): shipped, never committed.
+shader-list/
 release-symbols/
 
 # --- Source icon assets (keep ICO, ignore PNG source) ---

@@ -3773,10 +3773,18 @@ index 91ac08f..79a787f 100644
  }
  
 diff --git a/src/input/mnk/mnk_input_driver.cpp b/src/input/mnk/mnk_input_driver.cpp
-index 3f9422d..2c5fcc5 100644
+index 3f9422d..cdbe1b5 100644
 --- a/src/input/mnk/mnk_input_driver.cpp
 +++ b/src/input/mnk/mnk_input_driver.cpp
-@@ -65,12 +65,9 @@ namespace {
+@@ -18,6 +18,7 @@
+ #include <rex/ui/window.h>
+ 
+ #include <algorithm>
++#include <bitset>
+ #include <cmath>
+ #include <cstdlib>
+ #include <cstring>
+@@ -65,12 +66,12 @@ namespace {
  // A single device, so its handle is a constant.
  constexpr rex::input::DeviceId kMnkDevice = static_cast<rex::input::DeviceId>(0x4D4E4B00);
  
@@ -3787,36 +3795,132 @@ index 3f9422d..2c5fcc5 100644
 -// that binding a bare modifier name ("Shift") can never fire, since holding it
 -// makes the live mask non-zero while the bind wants zero.
 +// Bind values are comma-separated alternatives with optional modifier
-+// prefixes ("Q,I", "Shift+W"). Modifier matching is exact; a bind naming a
-+// modifier itself ignores that key's own contribution to the live mask.
++// prefixes ("Q,I", "Shift+W"). The most specific bind wins: a bind with
++// modifiers matches when they are held, and claims its key, so a plain bind on
++// that key ("Up" under "Shift+Up") stays off. Plain binds ignore held
++// modifiers, so Shift as a trigger still combines with other keys. A bind
++// naming a modifier itself ignores that key's own contribution to the mask.
  constexpr uint8_t kModShift = 1u << 0;
  constexpr uint8_t kModCtrl = 1u << 1;
  constexpr uint8_t kModAlt = 1u << 2;
-@@ -124,13 +121,20 @@ std::string_view TrimSpaces(std::string_view s) {
+@@ -122,17 +123,48 @@ std::string_view TrimSpaces(std::string_view s) {
+   return s;
+ }
  
- bool TokenPressed(const bool (&key_down)[256], std::string_view token, uint8_t live_mods) {
-   uint8_t want = TakeModifiers(token);
+-bool TokenPressed(const bool (&key_down)[256], std::string_view token, uint8_t live_mods) {
+-  uint8_t want = TakeModifiers(token);
 -  if (want != live_mods) {
--    return false;
--  }
-   rex::ui::VirtualKey vk = rex::ui::ParseVirtualKey(token);
-   if (vk == rex::ui::VirtualKey::kNone) {
++using KeySet = std::bitset<256>;
++
++// Parses one bind token; false if it names no key.
++bool ParseToken(std::string_view token, uint8_t live_mods, uint8_t& want, uint8_t& mods,
++                uint16_t& idx) {
++  want = TakeModifiers(token);
++  rex::ui::VirtualKey vk = rex::ui::ParseVirtualKey(token);
++  idx = static_cast<uint16_t>(vk);
++  if (vk == rex::ui::VirtualKey::kNone || idx >= 256) {
      return false;
    }
+-  rex::ui::VirtualKey vk = rex::ui::ParseVirtualKey(token);
+-  if (vk == rex::ui::VirtualKey::kNone) {
++  mods = live_mods;
 +  if (vk == rex::ui::VirtualKey::kShift) {
-+    live_mods &= ~kModShift;
++    mods &= ~kModShift;
 +  } else if (vk == rex::ui::VirtualKey::kControl) {
-+    live_mods &= ~kModCtrl;
++    mods &= ~kModCtrl;
 +  } else if (vk == rex::ui::VirtualKey::kMenu) {
-+    live_mods &= ~kModAlt;
++    mods &= ~kModAlt;
 +  }
-+  if (want != live_mods) {
-+    return false;
++  return true;
++}
++
++bool TokenPressed(const bool (&key_down)[256], std::string_view token, uint8_t live_mods,
++                  const KeySet& claimed) {
++  uint8_t want, mods;
++  uint16_t idx;
++  if (!ParseToken(token, live_mods, want, mods, idx) || !key_down[idx]) {
+     return false;
+   }
+-  uint16_t idx = static_cast<uint16_t>(vk);
+-  return idx < 256 && key_down[idx];
++  return want ? (mods & want) == want : !claimed[idx];
++}
++
++template <typename Fn>
++void ForEachToken(std::string_view binds, Fn&& fn) {
++  while (!binds.empty()) {
++    size_t comma = binds.find(',');
++    std::string_view token = TrimSpaces(binds.substr(0, comma));
++    binds = comma == std::string_view::npos ? std::string_view() : binds.substr(comma + 1);
++    if (!token.empty() && fn(token)) {
++      return;
++    }
 +  }
-   uint16_t idx = static_cast<uint16_t>(vk);
-   return idx < 256 && key_down[idx];
  }
-@@ -228,6 +232,7 @@ void MnkInputDriver::EnumerateDevices(std::vector<DeviceInfo>& out) {
+ 
+ std::atomic<bool> mouse_look_active{true};
+@@ -200,23 +232,44 @@ bool MnkInputDriver::IsEnabled() const {
+   return REXCVAR_GET(mnk_mode);
+ }
+ 
+-static bool IsBindPressed(const bool (&key_down)[256], const std::string& cvar_val) {
++// Keys taken by a held bind with modifiers, across every bind.
++static KeySet ClaimedKeys(const bool (&key_down)[256]) {
+   const uint8_t live_mods = LiveModifiers(key_down);
+-  std::string_view rest(cvar_val);
+-  while (!rest.empty()) {
+-    size_t comma = rest.find(',');
+-    std::string_view token = rest.substr(0, comma);
+-    if (comma == std::string_view::npos) {
+-      rest = std::string_view();
+-    } else {
+-      rest.remove_prefix(comma + 1);
+-    }
+-    token = TrimSpaces(token);
+-    if (!token.empty() && TokenPressed(key_down, token, live_mods)) {
+-      return true;
+-    }
+-  }
+-  return false;
++  KeySet claimed;
++  for (const std::string* binds :
++       {&REXCVAR_GET(keybind_a), &REXCVAR_GET(keybind_b), &REXCVAR_GET(keybind_x),
++        &REXCVAR_GET(keybind_y), &REXCVAR_GET(keybind_left_trigger),
++        &REXCVAR_GET(keybind_right_trigger), &REXCVAR_GET(keybind_left_shoulder),
++        &REXCVAR_GET(keybind_right_shoulder), &REXCVAR_GET(keybind_lstick_up),
++        &REXCVAR_GET(keybind_lstick_down), &REXCVAR_GET(keybind_lstick_left),
++        &REXCVAR_GET(keybind_lstick_right), &REXCVAR_GET(keybind_lstick_press),
++        &REXCVAR_GET(keybind_rstick_up), &REXCVAR_GET(keybind_rstick_down),
++        &REXCVAR_GET(keybind_rstick_left), &REXCVAR_GET(keybind_rstick_right),
++        &REXCVAR_GET(keybind_rstick_press), &REXCVAR_GET(keybind_dpad_up),
++        &REXCVAR_GET(keybind_dpad_down), &REXCVAR_GET(keybind_dpad_left),
++        &REXCVAR_GET(keybind_dpad_right), &REXCVAR_GET(keybind_back),
++        &REXCVAR_GET(keybind_start), &REXCVAR_GET(keybind_guide)}) {
++    ForEachToken(*binds, [&](std::string_view token) {
++      uint8_t want, mods;
++      uint16_t idx;
++      if (ParseToken(token, live_mods, want, mods, idx) && want && key_down[idx] &&
++          (mods & want) == want) {
++        claimed.set(idx);
++      }
++      return false;
++    });
++  }
++  return claimed;
++}
++
++static bool IsBindPressed(const bool (&key_down)[256], const std::string& cvar_val,
++                          const KeySet& claimed) {
++  const uint8_t live_mods = LiveModifiers(key_down);
++  bool pressed = false;
++  ForEachToken(cvar_val, [&](std::string_view token) {
++    return pressed = TokenPressed(key_down, token, live_mods, claimed);
++  });
++  return pressed;
+ }
+ 
+ void MnkInputDriver::EnumerateDevices(std::vector<DeviceInfo>& out) {
+@@ -228,6 +281,7 @@ void MnkInputDriver::EnumerateDevices(std::vector<DeviceInfo>& out) {
    info.id = kMnkDevice;
    info.name = "Keyboard and Mouse";
    info.synthetic = true;
@@ -3824,7 +3928,96 @@ index 3f9422d..2c5fcc5 100644
    out.push_back(info);
  }
  
-@@ -510,6 +515,12 @@ void MnkInputDriver::OnMouseDown(rex::ui::MouseEvent& e) {
+@@ -273,62 +327,63 @@ X_RESULT MnkInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
+   }
+ 
+   std::lock_guard lock(state_mutex_);
++  const KeySet claimed = ClaimedKeys(key_down_);
+ 
+   uint16_t buttons = 0;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_a)))
++  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_a), claimed))
+     buttons |= X_INPUT_GAMEPAD_A;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_b)))
++  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_b), claimed))
+     buttons |= X_INPUT_GAMEPAD_B;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_x)))
++  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_x), claimed))
+     buttons |= X_INPUT_GAMEPAD_X;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_y)))
++  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_y), claimed))
+     buttons |= X_INPUT_GAMEPAD_Y;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_left_shoulder)))
++  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_left_shoulder), claimed))
+     buttons |= X_INPUT_GAMEPAD_LEFT_SHOULDER;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_right_shoulder)))
++  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_right_shoulder), claimed))
+     buttons |= X_INPUT_GAMEPAD_RIGHT_SHOULDER;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_lstick_press)))
++  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_lstick_press), claimed))
+     buttons |= X_INPUT_GAMEPAD_LEFT_THUMB;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_press)))
++  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_press), claimed))
+     buttons |= X_INPUT_GAMEPAD_RIGHT_THUMB;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_back)))
++  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_back), claimed))
+     buttons |= X_INPUT_GAMEPAD_BACK;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_start)))
++  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_start), claimed))
+     buttons |= X_INPUT_GAMEPAD_START;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_guide)))
++  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_guide), claimed))
+     buttons |= X_INPUT_GAMEPAD_GUIDE;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_dpad_up)))
++  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_dpad_up), claimed))
+     buttons |= X_INPUT_GAMEPAD_DPAD_UP;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_dpad_down)))
++  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_dpad_down), claimed))
+     buttons |= X_INPUT_GAMEPAD_DPAD_DOWN;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_dpad_left)))
++  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_dpad_left), claimed))
+     buttons |= X_INPUT_GAMEPAD_DPAD_LEFT;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_dpad_right)))
++  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_dpad_right), claimed))
+     buttons |= X_INPUT_GAMEPAD_DPAD_RIGHT;
+ 
+-  uint8_t lt = IsBindPressed(key_down_, REXCVAR_GET(keybind_left_trigger)) ? 0xFF : 0;
+-  uint8_t rt = IsBindPressed(key_down_, REXCVAR_GET(keybind_right_trigger)) ? 0xFF : 0;
++  uint8_t lt = IsBindPressed(key_down_, REXCVAR_GET(keybind_left_trigger), claimed) ? 0xFF : 0;
++  uint8_t rt = IsBindPressed(key_down_, REXCVAR_GET(keybind_right_trigger), claimed) ? 0xFF : 0;
+ 
+   int32_t lx = 0;
+   int32_t ly = 0;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_lstick_left)))
++  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_lstick_left), claimed))
+     lx -= INT16_MAX;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_lstick_right)))
++  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_lstick_right), claimed))
+     lx += INT16_MAX;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_lstick_up)))
++  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_lstick_up), claimed))
+     ly += INT16_MAX;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_lstick_down)))
++  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_lstick_down), claimed))
+     ly -= INT16_MAX;
+ 
+   int32_t rx = 0;
+   int32_t ry = 0;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_left)))
++  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_left), claimed))
+     rx -= INT16_MAX;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_right)))
++  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_right), claimed))
+     rx += INT16_MAX;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_up)))
++  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_up), claimed))
+     ry += INT16_MAX;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_down)))
++  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_down), claimed))
+     ry -= INT16_MAX;
+ 
+   if (REXCVAR_GET(mnk_mouse) && IsMouseLookActive()) {
+@@ -510,6 +565,12 @@ void MnkInputDriver::OnMouseDown(rex::ui::MouseEvent& e) {
      case rex::ui::MouseEvent::Button::kMiddle:
        SetKeyState(static_cast<uint16_t>(VirtualKey::kMButton), true);
        break;
@@ -3837,7 +4030,7 @@ index 3f9422d..2c5fcc5 100644
      default:
        break;
    }
-@@ -529,6 +540,12 @@ void MnkInputDriver::OnMouseUp(rex::ui::MouseEvent& e) {
+@@ -529,6 +590,12 @@ void MnkInputDriver::OnMouseUp(rex::ui::MouseEvent& e) {
      case rex::ui::MouseEvent::Button::kMiddle:
        SetKeyState(static_cast<uint16_t>(VirtualKey::kMButton), false);
        break;
@@ -5093,3 +5286,131 @@ index 11b83be..4ee14f9 100644
  
    fresh.Store(context_ptr);
  }
+diff --git a/src/system/xam/content_manager.cpp b/src/system/xam/content_manager.cpp
+index bd6c797..b0637e7 100644
+--- a/src/system/xam/content_manager.cpp
++++ b/src/system/xam/content_manager.cpp
+@@ -203,7 +203,9 @@ X_RESULT ContentManager::WriteContentHeaderFile(uint64_t xuid, XCONTENT_AGGREGAT
+   auto parent_path = header_path.parent_path();
+ 
+   if (!std::filesystem::exists(parent_path)) {
+-    if (!std::filesystem::create_directories(parent_path)) {
++    std::error_code ec;
++    if (!std::filesystem::create_directories(parent_path, ec)) {
++      REXSYS_ERROR("Cannot create {}: {}", rex::path_to_utf8(parent_path), ec.message());
+       return X_ERROR_ACCESS_DENIED;
+     }
+   }
+@@ -268,7 +270,9 @@ X_RESULT ContentManager::CreateContent(const std::string_view root_name, uint64_
+   if (std::filesystem::exists(package_path)) {
+     return X_ERROR_ALREADY_EXISTS;
+   }
+-  if (!std::filesystem::create_directories(package_path)) {
++  std::error_code ec;
++  if (!std::filesystem::create_directories(package_path, ec)) {
++    REXSYS_ERROR("Cannot create {}: {}", rex::path_to_utf8(package_path), ec.message());
+     return X_ERROR_ACCESS_DENIED;
+   }
+   auto package = ResolvePackage(root_name, xuid, data);
+@@ -352,10 +356,14 @@ X_RESULT ContentManager::SetContentThumbnail(uint64_t xuid, const XCONTENT_AGGRE
+                                              std::vector<uint8_t> buffer) {
+   auto global_lock = global_critical_region_.Acquire();
+   auto package_path = ResolvePackagePath(xuid, data);
+-  std::filesystem::create_directories(package_path);
+-  if (std::filesystem::exists(package_path)) {
++  std::error_code ec;
++  std::filesystem::create_directories(package_path, ec);
++  if (std::filesystem::exists(package_path, ec)) {
+     auto thumb_path = package_path / kThumbnailFileName;
+     auto file = rex::filesystem::OpenFile(thumb_path, "wb");
++    if (!file) {
++      return X_ERROR_ACCESS_DENIED;
++    }
+     fwrite(buffer.data(), 1, buffer.size(), file);
+     fclose(file);
+     return X_ERROR_SUCCESS;
+diff --git a/src/system/xam/user_profile.cpp b/src/system/xam/user_profile.cpp
+index a77f5e6..8abcd70 100644
+--- a/src/system/xam/user_profile.cpp
++++ b/src/system/xam/user_profile.cpp
+@@ -159,10 +159,15 @@ void UserProfile::SaveSetting(UserProfile::Setting* setting) {
+   if (setting->is_title_specific()) {
+     auto serialized_setting = setting->Serialize();
+     auto content_dir = kernel_state_->content_manager()->ResolveGameUserContentPath();
+-    std::filesystem::create_directories(content_dir);
++    std::error_code ec;
++    std::filesystem::create_directories(content_dir, ec);
+     auto setting_id = fmt::format("{:08X}", setting->setting_id);
+     auto file_path = content_dir / setting_id;
+     auto file = rex::filesystem::OpenFile(file_path, "wb");
++    if (!file) {
++      REXSYS_ERROR("Cannot write setting {}", rex::path_to_utf8(file_path));
++      return;
++    }
+     fwrite(serialized_setting.data(), 1, serialized_setting.size(), file);
+     fclose(file);
+   } else {
+diff --git a/src/filesystem/devices/host_path_device.cpp b/src/filesystem/devices/host_path_device.cpp
+index f68b79a..18e343a 100644
+--- a/src/filesystem/devices/host_path_device.cpp
++++ b/src/filesystem/devices/host_path_device.cpp
+@@ -36,7 +36,10 @@ bool HostPathDevice::Initialize() {
+   if (!std::filesystem::exists(host_path_)) {
+     if (!read_only_) {
+       // Create the path.
+-      std::filesystem::create_directories(host_path_);
++      std::error_code ec;
++      if (!std::filesystem::create_directories(host_path_, ec)) {
++        REXFS_ERROR("Cannot create host path {}: {}", rex::path_to_utf8(host_path_), ec.message());
++      }
+     } else {
+       REXFS_ERROR("Host path does not exist");
+       return false;
+diff --git a/src/filesystem/devices/host_path_entry.cpp b/src/filesystem/devices/host_path_entry.cpp
+index d0dce00..49eaddb 100644
+--- a/src/filesystem/devices/host_path_entry.cpp
++++ b/src/filesystem/devices/host_path_entry.cpp
+@@ -89,7 +89,8 @@ std::unique_ptr<Entry> HostPathEntry::CreateEntryInternal(const std::string_view
+                                                           uint32_t attributes) {
+   auto full_path = host_path_ / rex::to_path(name);
+   if (attributes & kFileAttributeDirectory) {
+-    if (!std::filesystem::create_directories(full_path)) {
++    std::error_code ec;
++    if (!std::filesystem::create_directories(full_path, ec)) {
+       return nullptr;
+     }
+   } else {
+diff --git a/src/core/logging.cpp b/src/core/logging.cpp
+index 1645848..cbb5d72 100644
+--- a/src/core/logging.cpp
++++ b/src/core/logging.cpp
+@@ -72,11 +72,11 @@ LogConfig g_config;
+ 
+ std::filesystem::path NextSequentialLogPath(const std::filesystem::path& logs_dir,
+                                             std::string_view app_name) {
+-  std::filesystem::create_directories(logs_dir);
++  std::error_code ec;
++  std::filesystem::create_directories(logs_dir, ec);
+ 
+   int max_seq = 0;
+   std::string prefix = std::string(app_name) + "_";
+-  std::error_code ec;
+   for (const auto& entry : std::filesystem::directory_iterator(logs_dir, ec)) {
+     if (!entry.is_regular_file())
+       continue;
+diff --git a/src/core/filesystem.cpp b/src/core/filesystem.cpp
+index 42b0468..6218710 100644
+--- a/src/core/filesystem.cpp
++++ b/src/core/filesystem.cpp
+@@ -19,8 +19,9 @@ namespace filesystem {
+ bool CreateParentFolder(const std::filesystem::path& path) {
+   if (path.has_parent_path()) {
+     auto parent_path = path.parent_path();
+-    if (!std::filesystem::exists(parent_path)) {
+-      return std::filesystem::create_directories(parent_path);
++    std::error_code ec;
++    if (!std::filesystem::exists(parent_path, ec)) {
++      return std::filesystem::create_directories(parent_path, ec);
+     }
+   }
+   return true;

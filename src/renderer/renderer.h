@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 
 namespace rex::ui {
@@ -37,7 +38,22 @@ struct CallArgs {
 uint32_t CommandBufferWritePtr(uint32_t device, const uint8_t* base);
 
 // UI thread, after GPU setup. Detaches the SDK presenter from the window.
-bool Start(rex::ui::Window* window);
+// cache_dir: where the pipeline storage lives (empty: not recorded). Starts
+// building the stored shaders and pipelines in the background.
+bool Start(rex::ui::Window* window, const std::filesystem::path& cache_dir);
+
+// Shaders and pipelines built before the game starts (Start).
+struct PrecompileStatus {
+  bool active = false;  // still building
+  bool pipelines = false;  // past the shaders, building pipelines
+  uint32_t shaders_done = 0, shaders_total = 0;
+  uint32_t pipelines_done = 0, pipelines_total = 0;
+  std::chrono::steady_clock::time_point start;
+};
+PrecompileStatus GetPrecompileStatus();
+// Runs `done` once the build has finished (on its thread); false, without
+// keeping `done`, when nothing is being built.
+bool RunWhenPrecompiled(std::function<void()> done);
 void Stop();
 
 // Guest render thread.

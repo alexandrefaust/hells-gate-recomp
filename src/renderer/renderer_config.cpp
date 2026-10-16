@@ -57,6 +57,9 @@ void ConfigureSyncOnlyGpu() {
   bool queries_off = rex::cvar::SetFlagByName("occlusion_query_enable", "false");
   REXLOG_INFO("renderer=dante: gpu_host_rendering=false ({}), occlusion_query_enable=false ({})",
               host_off ? "ok" : "FAILED", queries_off ? "ok" : "FAILED");
+  // The CP's D3D12 shader storage is unused here, and loading it blocks the UI
+  // thread (the precompile progress card) for seconds after driver updates.
+  rex::cvar::SetFlagByName("store_shaders", "false");
   if (REXCVAR_GET(dante_packet_inventory)) {
     bool ok = rex::cvar::SetFlagByName("gpu_packet_inventory", "true");
     REXLOG_INFO("renderer=dante: gpu_packet_inventory ({})", ok ? "ok" : "FAILED");

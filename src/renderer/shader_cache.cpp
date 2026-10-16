@@ -1,5 +1,6 @@
 #include "shader_cache.h"
 
+#include "pipeline_storage.h"
 #include "png_dump.h"
 #include "render_stats.h"
 
@@ -115,32 +116,40 @@ std::vector<uint32_t> PrepareSpirvForDiligent(const std::vector<uint8_t>& binary
   return out;
 }
 
-// Pipeline key part of a shader: its ucode hash with the modification mixed in.
-uint64_t ShaderKey(uint64_t ucode_hash, uint64_t modification) {
-  return ucode_hash ^ (modification * 0x9E3779B97F4A7C15ull);
-}
-
 struct GuestShader {
   std::unique_ptr<rg::SpirvShader> shader;
   // Per modification: compiled shader, or null after a failure.
   std::unordered_map<uint64_t, dl::RefCntAutoPtr<dl::IShader>> compiled;
 };
 
+// A translator per thread: translating is not thread-safe.
+std::unique_ptr<rg::SpirvShaderTranslator> MakeTranslator(float scale_x, float scale_y) {
+  auto translator =
+      std::make_unique<rg::SpirvShaderTranslator>(TranslatorFeatures(), false, false, false);
+  if (scale_x != 1.0f || scale_y != 1.0f) {
+    translator->SetFractionalDrawResolutionScale(scale_x, scale_y);
+  }
+  return translator;
+}
+
 }  // namespace
+
+uint64_t ShaderKey(uint64_t ucode_hash, uint64_t modification) {
+  return ucode_hash ^ (modification * 0x9E3779B97F4A7C15ull);
+}
 
 struct ShaderCache::Impl {
   dl::IRenderDevice* device;
-  Impl(float scale_x, float scale_y) : translator(TranslatorFeatures(), false, false, false) {
-    if (scale_x != 1.0f || scale_y != 1.0f) {
-      translator.SetFractionalDrawResolutionScale(scale_x, scale_y);
-    }
-  }
+  PipelineStorage* storage = nullptr;
+  float scale_x, scale_y;
+  Impl(float scale_x, float scale_y)
+      : scale_x(scale_x), scale_y(scale_y), translator(MakeTranslator(scale_x, scale_y)) {}
 
-  rg::SpirvShaderTranslator translator;
+  std::unique_ptr<rg::SpirvShaderTranslator> translator;
   rex::string::StringBuffer disasm_buffer;
   std::unordered_map<uint64_t, GuestShader> shaders;  // by ucode hash
-  uint32_t translated = 0;
-  uint32_t failed = 0;
+  std::atomic<uint32_t> translated{0};
+  std::atomic<uint32_t> failed{0};
 
   GuestShader& Load(rg::xenos::ShaderType type, const GuestShaderCode& code, uint64_t& hash) {
     hash = XXH3_64bits(code.ucode, code.dwords * sizeof(uint32_t));
@@ -148,6 +157,7 @@ struct ShaderCache::Impl {
     if (!entry.shader) {
       entry.shader = std::make_unique<rg::SpirvShader>(type, hash, code.ucode, code.dwords);
       entry.shader->AnalyzeUcode(disasm_buffer);
+      if (storage) storage->AddShader(uint32_t(type), hash, code.ucode, code.dwords);
       if (REXCVAR_GET(dante_dump_shaders)) {
         auto path = FrameDumpDirectory() /
                     fmt::format("{}_{:016X}.txt",
@@ -165,6 +175,15 @@ struct ShaderCache::Impl {
   dl::IShader* Compile(GuestShader& entry, uint64_t modification, uint64_t hash) {
     auto it = entry.compiled.find(modification);
     if (it != entry.compiled.end()) return it->second;
+    dl::IShader* result = Build(entry, modification, hash, *translator);
+    if (result) ++g_render_stats.shaders_compiled;
+    return result;
+  }
+
+  // Adds the variant to `entry`; any thread with its own translator, one
+  // thread per entry.
+  dl::IShader* Build(GuestShader& entry, uint64_t modification, uint64_t hash,
+                     rg::SpirvShaderTranslator& translator) {
     dl::RefCntAutoPtr<dl::IShader> result;
     auto* translation = entry.shader->GetOrCreateTranslation(modification);
     if (!translation->is_translated()) translator.TranslateAnalyzedShader(*translation);
@@ -182,7 +201,6 @@ struct ShaderCache::Impl {
     }
     if (result) {
       ++translated;
-      ++g_render_stats.shaders_compiled;
     } else {
       ++failed;
       REXLOG_WARN("NATIVE-SH {} {:016X} mod {:016X} failed ({})", is_vertex ? "VS" : "PS", hash,
@@ -227,7 +245,7 @@ bool ShaderCache::Prepare(const rg::RegisterFile& regs, const GuestShaderCode& v
   auto host_vs_type = prim_type == rg::xenos::PrimitiveType::kPointList
                           ? rg::Shader::HostVertexShaderType::kPointListAsTriangleStrip
                           : rg::Shader::HostVertexShaderType::kVertex;
-  Modification vs_mod(impl_->translator.GetDefaultVertexShaderModification(
+  Modification vs_mod(impl_->translator->GetDefaultVertexShaderModification(
       vs.shader->GetDynamicAddressableRegisterCount(program_cntl.vs_num_reg), host_vs_type));
   vs_mod.vertex.interpolator_mask = interpolator_mask;
   vs_mod.vertex.tessellation_mode = 0;
@@ -246,9 +264,11 @@ bool ShaderCache::Prepare(const rg::RegisterFile& regs, const GuestShaderCode& v
   out.vertex = impl_->Compile(vs, vs_mod.value, vs_hash);
   out.vertex_info = vs.shader.get();
   out.vertex_key = ShaderKey(vs_hash, vs_mod.value);
+  out.vertex_hash = vs_hash;
+  out.vertex_modification = vs_mod.value;
 
   if (ps) {
-    Modification ps_mod(impl_->translator.GetDefaultPixelShaderModification(
+    Modification ps_mod(impl_->translator->GetDefaultPixelShaderModification(
         ps->shader->GetDynamicAddressableRegisterCount(program_cntl.ps_num_reg)));
     ps_mod.pixel.interpolator_mask = interpolator_mask;
     ps_mod.pixel.interpolators_centroid =
@@ -275,14 +295,59 @@ bool ShaderCache::Prepare(const rg::RegisterFile& regs, const GuestShaderCode& v
     out.pixel = impl_->Compile(*ps, ps_mod.value, ps_hash);
     out.pixel_info = ps->shader.get();
     out.pixel_key = ShaderKey(ps_hash, ps_mod.value);
+    out.pixel_hash = ps_hash;
+    out.pixel_modification = ps_mod.value;
     if (!out.pixel) return false;
   }
   return out.vertex != nullptr;
 }
 
+void ShaderCache::SetStorage(PipelineStorage* storage) { impl_->storage = storage; }
+
+void ShaderCache::Precompile(const std::vector<StoredShader>& shaders,
+                             const ShaderVariants& variants, uint32_t threads,
+                             const std::atomic<bool>& cancel, std::atomic<uint32_t>& done) {
+  Impl& m = *impl_;
+  std::vector<std::unique_ptr<rg::SpirvShaderTranslator>> translators(threads);
+  std::vector<rex::string::StringBuffer> buffers(threads);
+  std::vector<GuestShader> built(shaders.size());
+  RunParallel(shaders.size(), threads, [&](size_t i, uint32_t thread) {
+    const StoredShader& stored = shaders[i];
+    auto it = variants.find(stored.hash);
+    if (it == variants.end() || m.shaders.count(stored.hash)) return;
+    if (!translators[thread]) translators[thread] = MakeTranslator(m.scale_x, m.scale_y);
+    GuestShader& entry = built[i];
+    entry.shader =
+        std::make_unique<rg::SpirvShader>(rg::xenos::ShaderType(stored.type), stored.hash,
+                                          stored.ucode.data(), stored.ucode.size());
+    entry.shader->AnalyzeUcode(buffers[thread]);
+    for (uint64_t modification : it->second) {
+      if (cancel) return;
+      if (!entry.compiled.count(modification)) {
+        m.Build(entry, modification, stored.hash, *translators[thread]);
+      }
+      ++done;
+    }
+  });
+  for (size_t i = 0; i < shaders.size(); ++i) {
+    if (built[i].shader) m.shaders.emplace(shaders[i].hash, std::move(built[i]));
+  }
+}
+
+bool ShaderCache::Find(uint64_t hash, uint64_t modification, dl::IShader*& shader,
+                       const rg::SpirvShader*& info) const {
+  auto it = impl_->shaders.find(hash);
+  if (it == impl_->shaders.end()) return false;
+  auto variant = it->second.compiled.find(modification);
+  if (variant == it->second.compiled.end() || !variant->second) return false;
+  shader = variant->second;
+  info = it->second.shader.get();
+  return true;
+}
+
 void ShaderCache::LogStats() {
   REXLOG_INFO("NATIVE-SH guest shaders={} compiled={} failed={}", impl_->shaders.size(),
-              impl_->translated, impl_->failed);
+              impl_->translated.load(), impl_->failed.load());
 }
 
 }  // namespace renderer

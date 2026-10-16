@@ -4,10 +4,13 @@
 #include "overlay/achievement_ui.h"
 #include "overlay/fps_overlay.h"
 #include "overlay/overlay_style.h"
+#include "overlay/shader_progress.h"
 #include "renderer/renderer.h"
 #include "renderer/renderer_config.h"
 #include "renderer/ui_overlay.h"
 #include "session_info.h"
+#include "timer_resolution.h"
+#include "user_paths.h"
 
 #include <rex/chrono/clock.h>
 #include <rex/cvar.h>
@@ -20,6 +23,7 @@
 #include <rex/rex_app.h>
 #include <rex/system/function_dispatcher.h>
 #include <rex/system/kernel_state.h>
+#include <rex/system/xthread.h>
 #include <rex/system/xam/content_manager.h>
 #include <rex/ui/imgui_dialog.h>
 #include <rex/ui/keybinds.h>
@@ -74,6 +78,7 @@ class DantesInfernoApp : public rex::ReXApp {
   }
 
   void OnConfigurePaths(rex::PathConfig& paths) override {
+    user_paths::Configure(paths);
     if (!paths.game_data_root.empty()) return;
 
     const std::filesystem::path candidates[] = {
@@ -154,6 +159,32 @@ class DantesInfernoApp : public rex::ReXApp {
     }
   }
 
+  // The game starts once the renderer has built the recorded shaders and
+  // pipelines (renderer::Start). Elsewhere its first draw waits for them.
+  void OnPostLaunchModule(rex::system::XThread* thread) override {
+#if REX_PLATFORM_WIN32
+    if (thread && renderer::GetPrecompileStatus().active) {
+      thread->Suspend();
+      bool waiting = renderer::RunWhenPrecompiled([this, thread] {
+        thread->Resume();
+        app_context().CallInUIThread([this] {
+          if (!shutting_down_) shader_progress_.reset();
+        });
+      });
+      if (waiting) return;
+      thread->Resume();
+    }
+#else
+    (void)thread;
+    renderer::RunWhenPrecompiled([this] {
+      app_context().CallInUIThread([this] {
+        if (!shutting_down_) shader_progress_.reset();
+      });
+    });
+#endif
+    if (!renderer::GetPrecompileStatus().active) shader_progress_.reset();
+  }
+
   void OnPreLaunchModule() override {
     uint8_t* membase = runtime()->memory()->virtual_membase();
 
@@ -179,9 +210,11 @@ class DantesInfernoApp : public rex::ReXApp {
 
   void OnPostSetup() override {
     session_info::Log();
+    timer_resolution::Apply();
+    user_paths::Report(user_data_root());
     renderer::ConfigureSyncOnlyGpu();
     if (rex::cvar::Query<std::string>("renderer") == "dante") {
-      renderer::Start(window());
+      renderer::Start(window(), cache_root());
       // The SDK presenter is detached: ImGui records on the UI thread and the
       // renderer draws the overlay over each presented frame.
       if (imgui_drawer()) {
@@ -194,6 +227,15 @@ class DantesInfernoApp : public rex::ReXApp {
             DrawOverlayFrame();
           });
         });
+        if (renderer::GetPrecompileStatus().active) {
+          shader_progress_ = std::make_unique<overlay::ShaderProgress>(imgui_drawer(), [] {
+            renderer::PrecompileStatus s = renderer::GetPrecompileStatus();
+            return overlay::ShaderProgress::Status{s.active,         s.pipelines,
+                                                   s.shaders_done,   s.shaders_total,
+                                                   s.pipelines_done, s.pipelines_total,
+                                                   s.start};
+          });
+        }
       }
       // renderer=dante sets the aspect from a resolution wider than 16:9.
       g_ultrawide_target_aspect = static_cast<float>(REXCVAR_GET(ultrawide_target_aspect));
@@ -317,6 +359,19 @@ class DantesInfernoApp : public rex::ReXApp {
           rex::cvar::SetFlagByName("dante_record_frames", start ? "3600" : "0");
           REXLOG_INFO("dante_record_frames: {}", start ? "recording 3600 frames" : "stopped");
         });
+
+#ifdef DANTESINFERNO_DEV_CHEATS
+    // Development cheats (src/damage_hooks.cpp).
+    auto toggle_cheat = [](const char* cvar, const char* label) {
+      bool enabled = !rex::cvar::Query<bool>(cvar);
+      rex::cvar::SetFlagByName(cvar, enabled ? "true" : "false");
+      REXLOG_INFO("CHEAT {} {}", label, enabled ? "on" : "off");
+    };
+    rex::ui::RegisterBind("bind_cheat_god", "PageUp", "Cheat: toggle no damage or hits on the player",
+                          [toggle_cheat] { toggle_cheat("dante_cheat_god", "god mode"); });
+    rex::ui::RegisterBind("bind_cheat_one_hit", "PageDown", "Cheat: toggle one-hit kills",
+                          [toggle_cheat] { toggle_cheat("dante_cheat_one_hit", "one-hit kills"); });
+#endif
 
     rex::ui::RegisterBind("bind_verify_gpu_state", "F9", "Verify the GPU state of 3 frames", [] {
       bool ok = rex::cvar::SetFlagByName("verify_gpu_state_frames", "3");
@@ -448,6 +503,10 @@ class DantesInfernoApp : public rex::ReXApp {
     rex::ui::UnregisterBind("bind_pass_trace");
     rex::ui::UnregisterBind("bind_d3d_trace");
     rex::ui::UnregisterBind("bind_verify_gpu_state");
+#ifdef DANTESINFERNO_DEV_CHEATS
+    rex::ui::UnregisterBind("bind_cheat_god");
+    rex::ui::UnregisterBind("bind_cheat_one_hit");
+#endif
     rex::ui::UnregisterBind("bind_host_rendering");
     rex::ui::UnregisterBind("bind_dante_debug_view");
     rex::ui::UnregisterBind("bind_dante_record");
@@ -459,6 +518,7 @@ class DantesInfernoApp : public rex::ReXApp {
     rex::cvar::UnregisterChangeCallbacks("time_scalar");
     rex::cvar::UnregisterChangeCallbacks("ultrawide_target_aspect");
     fps_overlay_.reset();
+    shader_progress_.reset();
     rex::chrono::Clock::set_guest_time_scalar(1.0);
     rex::cvar::SetFlagByName("vsync", saved_vsync_ ? "true" : "false");
   }
@@ -510,6 +570,7 @@ class DantesInfernoApp : public rex::ReXApp {
   }
 
   std::unique_ptr<overlay::FpsOverlay> fps_overlay_;
+  std::unique_ptr<overlay::ShaderProgress> shader_progress_;
   std::unique_ptr<renderer::OverlayDrawer> overlay_drawer_;
   overlay::AchievementToast* achievement_toast_ = nullptr;
   std::atomic<bool> overlay_frame_pending_{false};

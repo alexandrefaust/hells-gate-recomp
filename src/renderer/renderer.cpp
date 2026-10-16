@@ -5,6 +5,7 @@
 #include "guest_gpu_state.h"
 #include "png_dump.h"
 #include "render_stats.h"
+#include "pipeline_storage.h"
 #include "shader_cache.h"
 #include "smaa_pass.h"
 #include "swizzle.h"
@@ -13,10 +14,12 @@
 #include "vulkan_device.h"
 
 #include "Common/interface/RefCntAutoPtr.hpp"
+#include "Primitives/interface/DataBlob.h"
 #include "Graphics/GraphicsEngine/interface/Buffer.h"
 #include "Graphics/GraphicsEngine/interface/DeviceContext.h"
 #include "Graphics/GraphicsEngine/interface/Fence.h"
 #include "Graphics/GraphicsEngine/interface/PipelineState.h"
+#include "Graphics/GraphicsEngine/interface/PipelineStateCache.h"
 #include "Graphics/GraphicsEngine/interface/RenderDevice.h"
 #include "Graphics/GraphicsEngine/interface/Sampler.h"
 #include "Graphics/GraphicsEngine/interface/ShaderResourceBinding.h"
@@ -25,6 +28,7 @@
 #include "Graphics/GraphicsTools/interface/MapHelper.hpp"
 
 #include <rex/cvar.h>
+#include <rex/filesystem.h>
 #include <rex/graphics/pipeline/texture/util.h>
 #include <rex/graphics/register_file.h>
 #include <rex/graphics/registers.h>
@@ -35,8 +39,10 @@
 #include <xxhash.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -46,11 +52,17 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
+
+REXCVAR_DEFINE_INT32(dante_precompile_threads, 0, "Diagnostics",
+                     "renderer=dante: threads building the recorded shaders and pipelines at "
+                     "launch (0 = all cores but one)")
+    .range(0, 64);
 
 REXCVAR_DEFINE_INT32(dante_debug_view, 0, "Diagnostics",
                      "renderer=dante: 0 presents the front buffer, N presents the N-th "
@@ -301,6 +313,29 @@ Scale ShadowMapScale() {
 std::unordered_map<ResolveTargetKey, ResolveTarget, ResolveTargetKeyHash> g_resolve_targets;
 std::set<uint64_t> g_reported_conversions;
 std::unique_ptr<ShaderCache> g_shader_cache;
+// Recorded shaders and pipelines installed next to the exe.
+constexpr char kShippedList[] = "dante_pipelines.bin";
+std::unique_ptr<PipelineStorage> g_pipeline_storage;
+dl::RefCntAutoPtr<dl::IPipelineStateCache> g_pso_cache;
+std::filesystem::path g_pso_cache_path;
+uint64_t g_pso_cache_saved_pipelines = 0;
+std::chrono::steady_clock::time_point g_pso_cache_saved_time;
+
+// Building the stored shaders and pipelines (Start). The guest waits for it
+// (RunWhenPrecompiled); draws wait too, in case it was not held back.
+struct Precompile {
+  std::thread thread;
+  std::atomic<bool> cancel{false};
+  std::atomic<bool> pipelines{false};
+  std::atomic<uint32_t> shaders_done{0}, pipelines_done{0};
+  uint32_t shaders_total = 0, pipelines_total = 0;
+  std::chrono::steady_clock::time_point start;
+  std::mutex mutex;
+  std::condition_variable finished_cv;
+  bool finished = true;
+  std::function<void()> on_finished;
+};
+Precompile g_precompile;
 std::unique_ptr<TextureCache> g_texture_cache;
 std::unique_ptr<DrawRenderer> g_draw_renderer;
 std::unique_ptr<SmaaPass> g_smaa;
@@ -905,6 +940,7 @@ DrawTargets BoundTargets(const uint8_t* base, uint32_t dev) {
     if (!rt) break;
     t.color[i] = rt->texture->GetDefaultView(dl::TEXTURE_VIEW_RENDER_TARGET);
     t.color_format[i] = rt->format;
+    t.guest_color_format[i] = s.format;
     t.color_count = i + 1;
     if (!t.width) {
       t.width = rt->width;
@@ -914,8 +950,8 @@ DrawTargets BoundTargets(const uint8_t* base, uint32_t dev) {
   SurfaceDesc ds;
   if (ReadSurface(base, Load32(base, dev + kDevDepthStencil), true, ds)) {
     RenderTargetKey key{ds.base_tile, ds.pitch, ds.format, true};
-    if (!t.color_count && ds.width == ds.height && g_shadow_map_factor != 1.0f &&
-        g_shadow_maps.insert(key).second) {
+    t.shadow_map = !t.color_count && ds.width == ds.height;
+    if (t.shadow_map && g_shadow_map_factor != 1.0f && g_shadow_maps.insert(key).second) {
       REXLOG_INFO("NATIVE-RT shadow map: depth base={} pitch={} {}x{}", ds.base_tile, ds.pitch,
                   ds.width, ds.height);
     }
@@ -932,6 +968,7 @@ DrawTargets BoundTargets(const uint8_t* base, uint32_t dev) {
       }
       t.depth = rt->texture->GetDefaultView(dl::TEXTURE_VIEW_DEPTH_STENCIL);
       t.depth_format = rt->format;
+      t.guest_depth_format = ds.format;
       if (!t.width) {
         t.width = rt->width;
         t.height = rt->height;
@@ -942,8 +979,14 @@ DrawTargets BoundTargets(const uint8_t* base, uint32_t dev) {
 }
 
 // Draws natively what the D3D call just submitted.
+void WaitForPrecompile() {
+  std::unique_lock lock(g_precompile.mutex);
+  g_precompile.finished_cv.wait(lock, [] { return g_precompile.finished; });
+}
+
 void SubmitDraw(uint32_t dev, uint32_t initiator, uint32_t dma_base, uint32_t dma_size,
                 const InlineDraw* inline_draw, const uint8_t* base) {
+  WaitForPrecompile();
   ++g_swap_draws;
   GuestRegisters state;
   CaptureDrawState(dev, base, state);
@@ -1174,6 +1217,120 @@ dl::ITextureView* FrontBufferView(dl::ITexture* texture, uint32_t swizzle) {
   return view ? view.RawPtr() : texture->GetDefaultView(dl::TEXTURE_VIEW_SHADER_RESOURCE);
 }
 
+void SavePsoCache() {
+  if (!g_pso_cache || g_pso_cache_path.empty()) return;
+  dl::RefCntAutoPtr<dl::IDataBlob> blob;
+  g_pso_cache->GetData(&blob);
+  if (!blob || !blob->GetSize()) return;
+  auto temp = g_pso_cache_path;
+  temp += ".tmp";
+  if (std::FILE* f = std::fopen(temp.string().c_str(), "wb")) {
+    bool ok = std::fwrite(blob->GetConstDataPtr(), 1, blob->GetSize(), f) == blob->GetSize();
+    ok = std::fclose(f) == 0 && ok;
+    std::error_code ec;
+    if (ok) std::filesystem::rename(temp, g_pso_cache_path, ec);
+  }
+  g_pso_cache_saved_pipelines = g_render_stats.pipelines_created;
+  g_pso_cache_saved_time = std::chrono::steady_clock::now();
+}
+
+void CreatePsoCache(const std::filesystem::path& path) {
+  g_pso_cache_path = path;
+  std::vector<uint8_t> data;
+  if (std::FILE* f = std::fopen(path.string().c_str(), "rb")) {
+    std::fseek(f, 0, SEEK_END);
+    long size = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    if (size > 0) {
+      data.resize(size_t(size));
+      data.resize(std::fread(data.data(), 1, data.size(), f));
+    }
+    std::fclose(f);
+  }
+  dl::PipelineStateCacheCreateInfo ci;
+  ci.Desc.Name = "DantePipelineCache";
+  ci.pCacheData = data.empty() ? nullptr : data.data();
+  ci.CacheDataSize = uint32_t(data.size());
+  g_device->RenderDevice()->CreatePipelineStateCache(ci, &g_pso_cache);
+  if (!g_pso_cache && !data.empty()) {
+    // Another driver or GPU: start empty.
+    ci.pCacheData = nullptr;
+    ci.CacheDataSize = 0;
+    g_device->RenderDevice()->CreatePipelineStateCache(ci, &g_pso_cache);
+  }
+  g_pso_cache_saved_time = std::chrono::steady_clock::now();
+}
+
+// Black frames with the overlay (the progress card) while the game waits.
+void PresentPrecompileFrame() {
+  {
+    std::unique_lock lock(g_mutex, std::try_to_lock);
+    if (!lock || !g_device || !g_device->UpdateWindowSize()) return;
+    g_device->BeginFrame();
+    g_device->Clear(0.0f, 0.0f, 0.0f, 1.0f);
+    g_device->Present(0);
+  }
+  RequestOverlayFrame();
+}
+
+void StartPrecompile() {
+  if (!g_pipeline_storage || g_pipeline_storage->pipelines().empty()) return;
+  ShaderVariants variants;
+  std::set<std::pair<uint64_t, uint64_t>> seen;
+  for (const StoredDraw& draw : g_pipeline_storage->pipelines()) {
+    const StoredPipeline& p = draw.pipeline;
+    if (seen.emplace(p.vertex_hash, p.vertex_modification).second) {
+      variants[p.vertex_hash].push_back(p.vertex_modification);
+    }
+    if (p.pixel_hash && seen.emplace(p.pixel_hash, p.pixel_modification).second) {
+      variants[p.pixel_hash].push_back(p.pixel_modification);
+    }
+  }
+  Precompile& c = g_precompile;
+  c.shaders_total = uint32_t(seen.size());
+  c.pipelines_total = uint32_t(g_pipeline_storage->pipelines().size());
+  c.start = std::chrono::steady_clock::now();
+  c.finished = false;
+  PipelineTargets targets;
+  targets.frame_scale = std::max(g_scale_x, g_scale_y);
+  targets.shadow_scale = ShadowMapScale().x;
+  targets.depth_format = [](uint32_t guest) { return uint32_t(DepthFormat(guest)); };
+  c.thread = std::thread([variants = std::move(variants), targets] {
+    Precompile& c = g_precompile;
+    int32_t forced = REXCVAR_GET(dante_precompile_threads);
+    uint32_t threads = forced > 0 ? uint32_t(forced)
+                                  : std::max(1u, std::thread::hardware_concurrency() - 1);
+    std::atomic<bool> working{true};
+    std::thread work([&] {
+      g_shader_cache->Precompile(g_pipeline_storage->shaders(), variants, threads, c.cancel,
+                                 c.shaders_done);
+      c.pipelines = true;
+      g_draw_renderer->Precompile(g_pipeline_storage->pipelines(), *g_shader_cache, targets,
+                                  threads, c.cancel, c.pipelines_done);
+      working = false;
+    });
+    while (working) {
+      PresentPrecompileFrame();
+      std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    }
+    work.join();
+    float seconds =
+        std::chrono::duration<float>(std::chrono::steady_clock::now() - c.start).count();
+    REXLOG_INFO("PRECOMPILE: {} shader variants, {} pipelines in {:.2f} s on {} threads{}",
+                c.shaders_total, c.pipelines_total, seconds, threads,
+                c.cancel ? " (cancelled)" : "");
+    if (!c.cancel) SavePsoCache();
+    std::function<void()> on_finished;
+    {
+      std::lock_guard lock(c.mutex);
+      c.finished = true;
+      on_finished = std::move(c.on_finished);
+    }
+    c.finished_cv.notify_all();
+    if (on_finished) on_finished();
+  });
+}
+
 void PresentTestPattern() {
   float phase = float(g_frame % 240) / 240.0f * 6.2831853f;
   g_device->BeginFrame();
@@ -1184,7 +1341,7 @@ void PresentTestPattern() {
 
 }  // namespace
 
-bool Start(rex::ui::Window* window) {
+bool Start(rex::ui::Window* window, const std::filesystem::path& cache_dir) {
   std::lock_guard lock(g_mutex);
   if (g_device) return true;
   void* hwnd = window ? window->GetNativeWindowHandle() : nullptr;
@@ -1251,15 +1408,53 @@ bool Start(rex::ui::Window* window) {
   g_texture_cache->SetReplacer([](uint64_t hash, const TextureCache::LoadedTexture* loaded) {
     return g_button_glyphs ? g_button_glyphs->Replace(hash, loaded) : nullptr;
   });
+  if (!cache_dir.empty()) {
+    // The list installed with the game, then what this player's runs added.
+    g_pipeline_storage =
+        std::make_unique<PipelineStorage>(cache_dir / "dante" / "pipelines.bin",
+                                          rex::filesystem::GetExecutableFolder() / kShippedList);
+    g_shader_cache->SetStorage(g_pipeline_storage.get());
+    g_draw_renderer->SetStorage(g_pipeline_storage.get());
+    CreatePsoCache(cache_dir / "dante" / "vulkan_pipeline_cache.bin");
+    g_draw_renderer->SetPipelineCache(g_pso_cache);
+  }
   g_register_file = std::make_unique<rex::graphics::RegisterFile>();
   g_frame = 0;
   REXLOG_INFO("DanteDevice: presenting on the game window (SDK presenter detached)");
+  StartPrecompile();
+  return true;
+}
+
+PrecompileStatus GetPrecompileStatus() {
+  const Precompile& c = g_precompile;
+  PrecompileStatus status;
+  {
+    std::lock_guard lock(g_precompile.mutex);
+    status.active = !c.finished;
+  }
+  status.pipelines = c.pipelines;
+  status.shaders_done = c.shaders_done;
+  status.shaders_total = c.shaders_total;
+  status.pipelines_done = c.pipelines_done;
+  status.pipelines_total = c.pipelines_total;
+  status.start = c.start;
+  return status;
+}
+
+bool RunWhenPrecompiled(std::function<void()> done) {
+  std::lock_guard lock(g_precompile.mutex);
+  if (g_precompile.finished) return false;
+  g_precompile.on_finished = std::move(done);
   return true;
 }
 
 void Stop() {
+  g_precompile.cancel = true;
+  if (g_precompile.thread.joinable()) g_precompile.thread.join();
   std::lock_guard lock(g_mutex);
   if (!g_device) return;
+  SavePsoCache();
+  g_pso_cache.Release();
   g_render_targets.clear();
   g_shadow_maps.clear();
   g_resolve_targets.clear();
@@ -1278,6 +1473,7 @@ void Stop() {
   g_button_glyphs.reset();
   g_texture_cache.reset();
   g_shader_cache.reset();
+  g_pipeline_storage.reset();
   g_device->Shutdown();
   g_device.reset();
   REXLOG_INFO("DanteDevice: stopped after {} frames", g_frame);
@@ -1689,6 +1885,11 @@ void AfterSwap(const CallArgs& a, const uint8_t* base, bool log_next_frame) {
     std::lock_guard present_lock(g_present_mutex);
     ++g_present_count.frames;
     g_present_count.last = std::chrono::steady_clock::now();
+  }
+  // New pipelines reach the Vulkan cache file now and then, not only at exit.
+  if (g_render_stats.pipelines_created != g_pso_cache_saved_pipelines &&
+      std::chrono::steady_clock::now() - g_pso_cache_saved_time > std::chrono::minutes(2)) {
+    SavePsoCache();
   }
   RequestOverlayFrame();
 }
