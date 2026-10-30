@@ -54,7 +54,17 @@ namespace DantesInferno
                 return null;
 
             using (var fs = new FileStream(xexPath, FileMode.Open, FileAccess.Read, FileShare.Read))
-            using (var reader = new BinaryReader(fs))
+            {
+                var info = Parse(fs);
+                if (info != null)
+                    info.XexPath = xexPath;
+                return info;
+            }
+        }
+
+        public static XexInfo Parse(Stream fs)
+        {
+            var reader = new BinaryReader(fs);
             {
                 uint magic = ReadUInt32BE(reader);
                 if (magic != 0x58455832) // "XEX2"
@@ -64,7 +74,7 @@ namespace DantesInferno
                 uint securityOffset = ReadUInt32BE(reader);
                 uint headerCount = ReadUInt32BE(reader);
 
-                var info = new XexInfo { XexPath = xexPath };
+                var info = new XexInfo();
 
                 for (int i = 0; i < headerCount && i < 64; i++)
                 {

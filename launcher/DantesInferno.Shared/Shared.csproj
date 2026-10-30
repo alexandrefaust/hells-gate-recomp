@@ -43,6 +43,7 @@
   <ItemGroup>
     <Compile Include="DisplayOptions.cs" />
     <Compile Include="DlcInstaller.cs" />
+    <Compile Include="IsoChecker.cs" />
     <Compile Include="GameConfig.cs" />
     <Compile Include="GitHubUpdater.cs" />
     <Compile Include="LanguageManifest.cs" />

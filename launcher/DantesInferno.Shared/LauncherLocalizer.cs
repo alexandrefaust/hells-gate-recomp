@@ -326,7 +326,7 @@ namespace DantesInferno
                 { ImportIsoPrompt, "The game files are not installed in:\n{0}\n\nSelect your Dante's Inferno Xbox 360 ISO to import them now?" },
                 { ImportIsoRunning, "Importing game files from the ISO (this takes a few minutes)..." },
                 { ImportIsoDone, "Game files imported. Press PLAY to start." },
-                { ImportIsoFailed, "Importing the ISO failed (exit code {0}). Details are in extract-xiso.log in the game folder." },
+                { ImportIsoFailed, "Importing the ISO failed (exit code {0}). These files were not extracted correctly:" },
             })
                 en[entry.Key] = entry.Value;
             _translations["en"] = en;
@@ -480,7 +480,7 @@ namespace DantesInferno
                 { ImportIsoPrompt, "Los archivos del juego no estan instalados en:\n{0}\n\nSeleccionar tu ISO de Dante's Inferno de Xbox 360 para importarlos ahora?" },
                 { ImportIsoRunning, "Importando archivos del juego desde la ISO (tarda unos minutos)..." },
                 { ImportIsoDone, "Archivos del juego importados. Pulsa JUGAR para empezar." },
-                { ImportIsoFailed, "La importacion de la ISO fallo (codigo {0}). Los detalles estan en extract-xiso.log en la carpeta del juego." },
+                { ImportIsoFailed, "La importacion de la ISO fallo (codigo {0}). Estos archivos no se extrajeron bien:" },
             })
                 es[entry.Key] = entry.Value;
             _translations["es"] = es;
@@ -634,7 +634,7 @@ namespace DantesInferno
                 { ImportIsoPrompt, "Os arquivos do jogo nao estao instalados em:\n{0}\n\nSelecionar sua ISO de Dante's Inferno do Xbox 360 para importa-los agora?" },
                 { ImportIsoRunning, "Importando arquivos do jogo da ISO (leva alguns minutos)..." },
                 { ImportIsoDone, "Arquivos do jogo importados. Clique em JOGAR para comecar." },
-                { ImportIsoFailed, "A importacao da ISO falhou (codigo {0}). Os detalhes estao em extract-xiso.log na pasta do jogo." },
+                { ImportIsoFailed, "A importacao da ISO falhou (codigo {0}). Estes arquivos nao foram extraidos corretamente:" },
             })
                 pt[entry.Key] = entry.Value;
             _translations["pt"] = pt;
@@ -788,7 +788,7 @@ namespace DantesInferno
                 { ImportIsoPrompt, "Les fichiers du jeu ne sont pas installes dans :\n{0}\n\nChoisir votre ISO Xbox 360 de Dante's Inferno pour les importer maintenant ?" },
                 { ImportIsoRunning, "Importation des fichiers du jeu depuis l'ISO (quelques minutes)..." },
                 { ImportIsoDone, "Fichiers du jeu importes. Cliquez sur JOUER pour commencer." },
-                { ImportIsoFailed, "L'importation de l'ISO a echoue (code {0}). Details dans extract-xiso.log dans le dossier du jeu." },
+                { ImportIsoFailed, "L'importation de l'ISO a echoue (code {0}). Ces fichiers n'ont pas ete extraits correctement :" },
             })
                 fr[entry.Key] = entry.Value;
             _translations["fr"] = fr;
@@ -942,7 +942,7 @@ namespace DantesInferno
                 { ImportIsoPrompt, "I file del gioco non sono installati in:\n{0}\n\nSelezionare la ISO Xbox 360 di Dante's Inferno per importarli ora?" },
                 { ImportIsoRunning, "Importazione dei file del gioco dalla ISO (qualche minuto)..." },
                 { ImportIsoDone, "File del gioco importati. Premi GIOCA per iniziare." },
-                { ImportIsoFailed, "Importazione della ISO non riuscita (codice {0}). Dettagli in extract-xiso.log nella cartella del gioco." },
+                { ImportIsoFailed, "Importazione della ISO non riuscita (codice {0}). Questi file non sono stati estratti correttamente:" },
             })
                 it[entry.Key] = entry.Value;
             _translations["it"] = it;

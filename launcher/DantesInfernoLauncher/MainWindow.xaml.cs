@@ -40,6 +40,12 @@ namespace DantesInferno.Launcher
             RefreshPlayStatus();
             RefreshDlcStatus();
             CheckForUpdatesOnStartup();
+            ContentRendered += (s, e) =>
+            {
+                string gameData = _config.GameDataRoot ?? PathHelper.GetGameDataPath(_installDir);
+                if (!File.Exists(Path.Combine(gameData, "default.xex")))
+                    OfferIsoImport(gameData);
+            };
         }
 
         private void CheckForUpdatesOnStartup()
@@ -521,7 +527,12 @@ namespace DantesInferno.Launcher
             string exePath = PathHelper.GetGameExecutablePath(_installDir);
             string gameData = _config.GameDataRoot ?? PathHelper.GetGameDataPath(_installDir);
             if (File.Exists(exePath) && File.Exists(Path.Combine(gameData, "default.xex")))
+            {
                 PlayStatusText.Text = LauncherLocalizer.Get(_launcherLanguage, LauncherLocalizer.PlayStatusReady);
+                string release = IsoChecker.InstalledRelease(gameData);
+                if (release != null)
+                    PlayStatusText.Text += " (" + release + ")";
+            }
             else
                 PlayStatusText.Text = LauncherLocalizer.Get(_launcherLanguage, LauncherLocalizer.PlayStatusMissing);
         }
@@ -661,8 +672,64 @@ namespace DantesInferno.Launcher
             if (dialog.ShowDialog(this) != true)
                 return;
             string iso = dialog.FileName;
-            string logPath = Path.Combine(gameData, "extract-xiso.log");
             PlayButton.IsEnabled = false;
+            PlayNoteText.Text = "Checking the ISO...";
+            Task.Factory.StartNew(() => IsoChecker.Check(iso)).ContinueWith(task =>
+            {
+                IsoCheckResult check = task.Exception == null ? task.Result : null;
+                if (check == null)
+                {
+                    check = new IsoCheckResult();
+                    check.Report.Add("ISO: " + iso);
+                    check.Problem = "The ISO could not be read: " + task.Exception.GetBaseException().Message;
+                    check.Report.Add("Problem: " + check.Problem);
+                }
+                WriteIsoReport(check, null);
+                if (!check.CanExtract)
+                {
+                    PlayButton.IsEnabled = true;
+                    PlayNoteText.Text = "";
+                    MessageBox.Show(check.Problem + "\n\nISO: " + iso, Lt(LauncherLocalizer.ImportIsoTitle),
+                        MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+                if (!check.KnownRelease && MessageBox.Show(
+                        "This ISO is Dante's Inferno, " + check.Release + ".\n\nThe port is built and tested with the Europe (En, De, It) " +
+                        "release. Other releases should work with the bundled Title Update but are not tested.\n\nImport it?",
+                        Lt(LauncherLocalizer.ImportIsoTitle), MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+                {
+                    PlayButton.IsEnabled = true;
+                    PlayNoteText.Text = "";
+                    return;
+                }
+                ExtractIso(iso, gameData, check);
+            }, TaskScheduler.FromCurrentSynchronizationContext());
+        }
+
+        private void WriteIsoReport(IsoCheckResult check, List<string> extractionProblems)
+        {
+            try
+            {
+                string logsDir = PathHelper.GetLogsPath(_installDir);
+                Directory.CreateDirectory(logsDir);
+                var lines = new List<string> { "ISO check " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) };
+                lines.AddRange(check.Report);
+                if (extractionProblems != null)
+                {
+                    lines.Add(extractionProblems.Count == 0
+                        ? "Extracted files: all present with the right sizes"
+                        : "Extracted files with problems:");
+                    lines.AddRange(extractionProblems.Select(p => "  " + p));
+                }
+                File.WriteAllLines(Path.Combine(logsDir, "iso_check.log"), lines);
+            }
+            catch { }
+        }
+
+        private void ExtractIso(string iso, string gameData, IsoCheckResult check)
+        {
+            string tool = PathHelper.GetExtractXisoPath(_installDir);
+            string logPath = Path.Combine(PathHelper.GetLogsPath(_installDir), "extract-xiso.log");
             PlayNoteText.Text = Lt(LauncherLocalizer.ImportIsoRunning);
 
             Task.Factory.StartNew(new Action(() =>
@@ -707,17 +774,24 @@ namespace DantesInferno.Launcher
                     lock (output) File.WriteAllText(logPath, output.ToString());
                 }
                 catch { }
-                bool imported = File.Exists(Path.Combine(gameData, "default.xex"));
+                var problems = IsoChecker.VerifyExtracted(check, gameData);
+                check.Report.Add("extract-xiso exit code: " + exitCode);
+                WriteIsoReport(check, problems);
+                bool imported = problems.Count == 0;
                 Dispatcher.Invoke(new Action(() =>
                 {
                     if (imported)
                         EnsureTitleUpdate(gameData);
                     PlayButton.IsEnabled = true;
-                    PlayNoteText.Text = imported ? Lt(LauncherLocalizer.ImportIsoDone) : "";
+                    PlayNoteText.Text = imported ? Lt(LauncherLocalizer.ImportIsoDone) + " (" + check.Release + ")" : "";
                     if (!imported)
                     {
-                        MessageBox.Show(Lf(LauncherLocalizer.ImportIsoFailed, exitCode), Lt(LauncherLocalizer.ImportIsoTitle),
-                            MessageBoxButton.OK, MessageBoxImage.Error);
+                        MessageBox.Show(Lf(LauncherLocalizer.ImportIsoFailed, exitCode) + "\n\n" +
+                            string.Join("\n", problems.Take(8)) +
+                            (problems.Count > 8 ? "\n..." : "") +
+                            "\n\nCheck the free space on the drive and that no antivirus blocked the files. " +
+                            "Details are in the logs folder (iso_check.log).",
+                            Lt(LauncherLocalizer.ImportIsoTitle), MessageBoxButton.OK, MessageBoxImage.Error);
                     }
                     PopulateLanguageCombo();
                     RefreshPlayStatus();
@@ -975,8 +1049,12 @@ namespace DantesInferno.Launcher
             {
                 var logs = Directory.Exists(logsDir)
                     ? Directory.GetFiles(logsDir, "*.log")
+                        .Where(f => Path.GetFileName(f).StartsWith("dantes_inferno", StringComparison.OrdinalIgnoreCase))
                         .OrderByDescending(f => File.GetLastWriteTime(f))
                         .Take(3)
+                        .Concat(new[] { "iso_check.log", "extract-xiso.log" }
+                            .Select(n => Path.Combine(logsDir, n))
+                            .Where(File.Exists))
                         .Select(Path.GetFileName)
                         .ToList()
                     : new List<string>();
