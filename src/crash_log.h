@@ -1,9 +1,11 @@
 #pragma once
 
 #include <rex/logging.h>
+#include "path_util.h"
 #include <rex/logging/macros.h>
 
 #include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -36,7 +38,7 @@ inline std::string ModuleOffset(const void* address) {
   }
   char path[MAX_PATH] = {};
   GetModuleFileNameA(module, path, MAX_PATH);
-  std::string name = std::filesystem::path(path).filename().string();
+  std::string name = path_util::Utf8(std::filesystem::path(path).filename());
   return fmt::format("{}+0x{:X}", name,
                      reinterpret_cast<uintptr_t>(address) - reinterpret_cast<uintptr_t>(module));
 }
@@ -77,9 +79,31 @@ inline LONG WINAPI FailFastHandler(EXCEPTION_POINTERS* info) {
   return EXCEPTION_CONTINUE_SEARCH;
 }
 
+inline void OnTerminate() {
+  std::string what = "unknown";
+  if (auto current = std::current_exception()) {
+    try {
+      std::rethrow_exception(current);
+    } catch (const std::exception& e) {
+      what = e.what();
+    } catch (...) {
+      what = "non-standard exception";
+    }
+  }
+  REXLOG_CRITICAL("CRASH (uncaught C++ exception): {}", what);
+  void* frames[32] = {};
+  USHORT count = RtlCaptureStackBackTrace(0, 32, frames, nullptr);
+  for (USHORT i = 0; i < count; ++i) {
+    REXLOG_CRITICAL("CRASH stack {}: {}", i, ModuleOffset(frames[i]));
+  }
+  if (auto logger = rex::GetLogger()) logger->flush();
+  std::abort();
+}
+
 inline void Install() {
   SetUnhandledExceptionFilter(UnhandledFilter);
   AddVectoredExceptionHandler(0, FailFastHandler);
+  std::set_terminate(OnTerminate);
 }
 
 inline std::string Sha1(const std::filesystem::path& file) {

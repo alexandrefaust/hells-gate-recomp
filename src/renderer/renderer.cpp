@@ -1,4 +1,5 @@
 #include "renderer.h"
+#include "path_util.h"
 
 #include "button_glyphs.h"
 #include "draw_renderer.h"
@@ -33,6 +34,7 @@
 #include <rex/graphics/pipeline/texture/util.h>
 #include <rex/graphics/register_file.h>
 #include <rex/graphics/registers.h>
+#include <rex/logging.h>
 #include <rex/logging/macros.h>
 #include <rex/ui/window.h>
 
@@ -317,6 +319,8 @@ std::unique_ptr<ShaderCache> g_shader_cache;
 // Recorded shaders and pipelines installed next to the exe.
 constexpr char kShippedList[] = "dante_pipelines.bin";
 std::unique_ptr<PipelineStorage> g_pipeline_storage;
+std::filesystem::path g_startup_marker;
+bool g_safe_start = false;
 dl::RefCntAutoPtr<dl::IPipelineStateCache> g_pso_cache;
 std::filesystem::path g_pso_cache_path;
 uint64_t g_pso_cache_saved_pipelines = 0;
@@ -1136,11 +1140,11 @@ void ReplayDump() {
                      dir / fmt::format("{:03}.png", i));
     }
   }
-  if (std::FILE* f = std::fopen((dir / "index.txt").string().c_str(), "wb")) {
+  if (std::FILE* f = path_util::Open(dir / "index.txt", "wb")) {
     std::fwrite(index.data(), 1, index.size(), f);
     std::fclose(f);
   }
-  REXLOG_INFO("NATIVE-REPLAY: {} frames written to {}", r.count, dir.string());
+  REXLOG_INFO("NATIVE-REPLAY: {} frames written to {}", r.count, path_util::Utf8(dir));
 }
 
 // Performance log: a summary every 30 s and a line per slow frame, with the
@@ -1227,7 +1231,7 @@ void SavePsoCache() {
   if (!blob || !blob->GetSize()) return;
   auto temp = g_pso_cache_path;
   temp += ".tmp";
-  if (std::FILE* f = std::fopen(temp.string().c_str(), "wb")) {
+  if (std::FILE* f = path_util::Open(temp, "wb")) {
     bool ok = std::fwrite(blob->GetConstDataPtr(), 1, blob->GetSize(), f) == blob->GetSize();
     ok = std::fclose(f) == 0 && ok;
     std::error_code ec;
@@ -1240,7 +1244,7 @@ void SavePsoCache() {
 void CreatePsoCache(const std::filesystem::path& path) {
   g_pso_cache_path = path;
   std::vector<uint8_t> data;
-  if (std::FILE* f = std::fopen(path.string().c_str(), "rb")) {
+  if (std::FILE* f = path_util::Open(path, "rb")) {
     std::fseek(f, 0, SEEK_END);
     long size = std::ftell(f);
     std::fseek(f, 0, SEEK_SET);
@@ -1301,8 +1305,9 @@ void StartPrecompile() {
   c.thread = std::thread([variants = std::move(variants), targets] {
     Precompile& c = g_precompile;
     int32_t forced = REXCVAR_GET(dante_precompile_threads);
-    uint32_t threads = forced > 0 ? uint32_t(forced)
-                                  : std::max(1u, std::thread::hardware_concurrency() - 1);
+    uint32_t threads = forced > 0  ? uint32_t(forced)
+                       : g_safe_start ? 1u
+                                      : std::max(1u, std::thread::hardware_concurrency() - 1);
     std::atomic<bool> working{true};
     std::thread work([&] {
       g_shader_cache->Precompile(g_pipeline_storage->shaders(), variants, threads, c.cancel,
@@ -1412,18 +1417,33 @@ bool Start(rex::ui::Window* window, const std::filesystem::path& cache_dir) {
     return g_button_glyphs ? g_button_glyphs->Replace(hash, loaded) : nullptr;
   });
   if (!cache_dir.empty()) {
+    std::error_code ec;
+    g_startup_marker = cache_dir / "dante" / "startup.lock";
+    std::filesystem::create_directories(g_startup_marker.parent_path(), ec);
+    g_safe_start = std::filesystem::exists(g_startup_marker, ec);
+    if (g_safe_start) {
+      REXLOG_WARN(
+          "DanteDevice: the previous start did not reach gameplay; starting without the Vulkan "
+          "pipeline cache and precompiling on one thread");
+    }
+    if (std::FILE* f = path_util::Open(g_startup_marker, "wb")) std::fclose(f);
     // The list installed with the game, then what this player's runs added.
     g_pipeline_storage =
         std::make_unique<PipelineStorage>(cache_dir / "dante" / "pipelines.bin",
                                           rex::filesystem::GetExecutableFolder() / kShippedList);
     g_shader_cache->SetStorage(g_pipeline_storage.get());
     g_draw_renderer->SetStorage(g_pipeline_storage.get());
+    if (g_safe_start) {
+      std::filesystem::rename(cache_dir / "dante" / "vulkan_pipeline_cache.bin",
+                              cache_dir / "dante" / "vulkan_pipeline_cache.bin.old", ec);
+    }
     CreatePsoCache(cache_dir / "dante" / "vulkan_pipeline_cache.bin");
     g_draw_renderer->SetPipelineCache(g_pso_cache);
   }
   g_register_file = std::make_unique<rex::graphics::RegisterFile>();
   g_frame = 0;
   REXLOG_INFO("DanteDevice: presenting on the game window (SDK presenter detached)");
+  if (auto logger = rex::GetLogger()) logger->flush();
   StartPrecompile();
   return true;
 }
@@ -1456,6 +1476,10 @@ void Stop() {
   if (g_precompile.thread.joinable()) g_precompile.thread.join();
   std::lock_guard lock(g_mutex);
   if (!g_device) return;
+  if (!g_startup_marker.empty()) {
+    std::error_code ec;
+    std::filesystem::remove(g_startup_marker, ec);
+  }
   SavePsoCache();
   g_pso_cache.Release();
   g_render_targets.clear();
@@ -1865,6 +1889,10 @@ void AfterSwap(const CallArgs& a, const uint8_t* base, bool log_next_frame) {
                    FrameDumpDirectory() / fmt::format("f{}_99_front.png", g_frame));
   }
   ++g_frame;
+  if (g_frame == 300 && !g_startup_marker.empty()) {
+    std::error_code ec;
+    std::filesystem::remove(g_startup_marker, ec);
+  }
   g_dump_this_frame = log_next_frame && !g_log_this_frame;
   g_dump_seq = 0;
   g_log_this_frame = log_next_frame;

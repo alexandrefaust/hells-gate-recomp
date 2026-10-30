@@ -1,6 +1,7 @@
 #pragma once
 
 #include "overlay/achievement_sound.h"
+#include "path_util.h"
 #include "overlay/achievement_ui.h"
 #include "overlay/fps_overlay.h"
 #include "overlay/overlay_style.h"
@@ -198,7 +199,7 @@ class DantesInfernoApp : public rex::ReXApp {
           "Title Update 2 was not applied.\n\ndefault.xexp is missing or does not match "
           "default.xex in:\n{}\n\nStart the game from the launcher, which puts it in place, or "
           "copy tu\\default.xexp from the release into that folder.",
-          game_data_root().string());
+          path_util::Utf8(game_data_root()));
       REXLOG_CRITICAL("{}", msg);
       if (auto logger = rex::GetLogger()) logger->flush();
       rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, msg);
@@ -213,11 +214,11 @@ class DantesInfernoApp : public rex::ReXApp {
       std::filesystem::path dump_path =
           std::filesystem::current_path() / "logs" / "guest_image.bin";
       std::filesystem::create_directories(dump_path.parent_path());
-      FILE* f = fopen(dump_path.string().c_str(), "wb");
+      FILE* f = path_util::Open(dump_path, "wb");
       if (f) {
         fwrite(membase + 0x82000000, 1, 0xD70000, f);
         fclose(f);
-        REXLOG_INFO("DLC-MOD: dumped guest image to {}", dump_path.string());
+        REXLOG_INFO("DLC-MOD: dumped guest image to {}", path_util::Utf8(dump_path));
       }
     }
   }
@@ -458,7 +459,7 @@ class DantesInfernoApp : public rex::ReXApp {
       }
       if (!entry.is_directory()) continue;
 
-      const auto name = entry.path().filename().string();
+      const auto name = path_util::Utf8(entry.path().filename());
       std::filesystem::path dest;
       if (is_hex_name(name, 16)) {
         dest = user_root / name;
@@ -493,7 +494,7 @@ class DantesInfernoApp : public rex::ReXApp {
 
     int new_installed = 0;
     for (auto& pkg : packages) {
-      auto rel = std::filesystem::relative(pkg, root).string();
+      auto rel = path_util::Utf8(std::filesystem::relative(pkg, root));
       if (installed.count(rel)) continue;
 
       std::array<uint8_t, 0x364> header{};
