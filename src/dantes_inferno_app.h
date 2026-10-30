@@ -8,6 +8,7 @@
 #include "renderer/renderer.h"
 #include "renderer/renderer_config.h"
 #include "renderer/ui_overlay.h"
+#include "crash_log.h"
 #include "session_info.h"
 #include "timer_resolution.h"
 #include "user_paths.h"
@@ -20,7 +21,9 @@
 #include <rex/input/flags.h>
 #include <rex/input/input_system.h>
 #include <rex/logging/macros.h>
+#include <rex/memory/utils.h>
 #include <rex/rex_app.h>
+#include <rex/system.h>
 #include <rex/system/function_dispatcher.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/xthread.h>
@@ -112,6 +115,7 @@ class DantesInfernoApp : public rex::ReXApp {
   }
 
   void OnPreSetup(rex::RuntimeConfig& config) override {
+    crash_log::Install();
     config.gpu_plugin = "xenos";
 
     REXCVAR_SET(input_backend, std::string("sdl"));
@@ -188,12 +192,21 @@ class DantesInfernoApp : public rex::ReXApp {
   void OnPreLaunchModule() override {
     uint8_t* membase = runtime()->memory()->virtual_membase();
 
+    if (rex::memory::load_and_swap<uint32_t>(membase + 0x82879110) != 0x3C8082CEu) {
+      auto msg = fmt::format(
+          "Title Update 2 was not applied.\n\ndefault.xexp is missing or does not match "
+          "default.xex in:\n{}\n\nStart the game from the launcher, which puts it in place, or "
+          "copy tu\\default.xexp from the release into that folder.",
+          game_data_root().string());
+      REXLOG_CRITICAL("{}", msg);
+      if (auto logger = rex::GetLogger()) logger->flush();
+      rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, msg);
+      std::_Exit(1);
+    }
+
     // The save system's setjmp must not switch fibers (dantes_inferno_hooks.h):
-    // clear the fiber-switch callback. TU2 is recognised by its setjmp.
-    auto* dispatcher = runtime()->function_dispatcher();
-    const bool is_tu2 = dispatcher && dispatcher->GetFunction(0x82879110);
-    uint32_t slot = is_tu2 ? 0x82CE68E4u : 0x82B101E4u;
-    *reinterpret_cast<uint32_t*>(membase + slot) = 0u;
+    // clear the fiber-switch callback.
+    *reinterpret_cast<uint32_t*>(membase + 0x82CE68E4u) = 0u;
 
     if (REXCVAR_GET(dlc_dump_image)) {
       std::filesystem::path dump_path =
@@ -210,6 +223,10 @@ class DantesInfernoApp : public rex::ReXApp {
 
   void OnPostSetup() override {
     session_info::Log();
+    crash_log::LogGameFiles(game_data_root());
+    if (auto* input = dynamic_cast<rex::input::InputSystem*>(runtime()->input_system())) {
+      input->SetDeviceAssignment(std::make_unique<rex::input::SharedAssignment>());
+    }
     timer_resolution::Apply();
     user_paths::Report(user_data_root());
     renderer::ConfigureSyncOnlyGpu();

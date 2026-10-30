@@ -10,6 +10,7 @@
 #include "smaa_pass.h"
 #include "swizzle.h"
 #include "texture_cache.h"
+#include "thread_cpu.h"
 #include "ui_overlay.h"
 #include "vulkan_device.h"
 
@@ -1194,6 +1195,8 @@ void PerfOnSwap(uint32_t draws, uint32_t resolves) {
       p.slow_frames, kSlowFrameMs, stats.shaders_compiled - p.at_start.shaders_compiled,
       stats.pipelines_created - p.at_start.pipelines_created, stats.shaders_compiled,
       stats.pipelines_created);
+  std::string threads = BusiestThreads(seconds);
+  if (!threads.empty()) REXLOG_INFO("PERF threads: {}", threads);
   p.start = now;
   p.frame_ms.clear();
   p.slow_frames = 0;
@@ -1873,7 +1876,11 @@ void AfterSwap(const CallArgs& a, const uint8_t* base, bool log_next_frame) {
     REXLOG_INFO("NATIVE-DRAW draws_without_shaders={} unparsed={}", g_draws_without_shaders,
                 g_draws_unparsed);
   }
-  if (!g_device->UpdateWindowSize()) return;  // minimized
+  if (!g_device->UpdateWindowSize()) {  // minimized
+    g_device->Context()->Flush();
+    g_device->Context()->FinishFrame();
+    return;
+  }
   if (debug_view) {
     g_device->PresentTexture(debug_view, 0);
   } else if (front_view) {
