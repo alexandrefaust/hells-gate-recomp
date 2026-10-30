@@ -7,6 +7,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Media;
 using System.Windows.Media.Imaging;
 
 namespace DantesInferno.Launcher
@@ -40,6 +41,11 @@ namespace DantesInferno.Launcher
             RefreshPlayStatus();
             RefreshDlcStatus();
             CheckForUpdatesOnStartup();
+            RefreshSettingsSummary();
+            Closing += (s, e) =>
+            {
+                AutoSave();
+            };
             ContentRendered += (s, e) =>
             {
                 string gameData = _config.GameDataRoot ?? PathHelper.GetGameDataPath(_installDir);
@@ -258,7 +264,10 @@ namespace DantesInferno.Launcher
 
             PlaySubtitleText.Text = Lt(LauncherLocalizer.PlaySubtitle);
             PlayButton.Content = Lt(LauncherLocalizer.PlayButton);
-            ExitButton.Content = Lt(LauncherLocalizer.ExitButton);
+            ExitButton.ToolTip = Lt(LauncherLocalizer.ExitButton);
+            ChangeSettingsText.Text = Lt(LauncherLocalizer.ChangeSettings);
+            DropDlcTitleText.Text = Lt(LauncherLocalizer.DropDlcTitle);
+            DropDlcHintText.Text = Lt(LauncherLocalizer.DropDlcHint);
             SupportButton.Content = Lt(LauncherLocalizer.SupportDeveloper);
             var version = GitHubUpdater.GetLocalVersion(_installDir);
             VersionText.Text = Lf(LauncherLocalizer.VersionLabel, version.ToString());
@@ -510,7 +519,7 @@ namespace DantesInferno.Launcher
             _config.KeybindBack = "Tab";
             _config.KeybindStart = "Escape";
             PopulateKeybinds();
-            MessageBox.Show("Default bindings restored. Click Save Bindings to keep them.", "Reset",
+            MessageBox.Show("Default bindings restored.", "Reset",
                 MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
@@ -531,10 +540,14 @@ namespace DantesInferno.Launcher
                 PlayStatusText.Text = LauncherLocalizer.Get(_launcherLanguage, LauncherLocalizer.PlayStatusReady);
                 string release = IsoChecker.InstalledRelease(gameData);
                 if (release != null)
-                    PlayStatusText.Text += " (" + release + ")";
+                    PlayStatusText.Text = PlayStatusText.Text.TrimEnd('.') + ": " + release;
+                StatusGameDot.Fill = (Brush)FindResource("SuccessBrush");
             }
             else
+            {
                 PlayStatusText.Text = LauncherLocalizer.Get(_launcherLanguage, LauncherLocalizer.PlayStatusMissing);
+                StatusGameDot.Fill = (Brush)FindResource("DangerBrush");
+            }
         }
 
         // Logs kept from earlier sessions; the session being started adds one.
@@ -1107,6 +1120,64 @@ namespace DantesInferno.Launcher
             Close();
         }
 
+        private void MinimizeButton_Click(object sender, RoutedEventArgs e)
+        {
+            WindowState = WindowState.Minimized;
+        }
+
+        private void TitleBar_MouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            if (e.ButtonState == System.Windows.Input.MouseButtonState.Pressed)
+                DragMove();
+        }
+
+        private void Nav_Checked(object sender, RoutedEventArgs e)
+        {
+            if (MainTabControl == null)
+                return;
+            int index;
+            if (!int.TryParse((sender as FrameworkElement)?.Tag as string, out index))
+                return;
+            if (MainTabControl.SelectedItem == TabSettings || MainTabControl.SelectedItem == TabControls)
+                AutoSave();
+            MainTabControl.SelectedIndex = index;
+        }
+
+        private void ChangeSettings_Click(object sender, RoutedEventArgs e)
+        {
+            NavSettings.IsChecked = true;
+        }
+
+        private bool AutoSave()
+        {
+            if (_config == null || !SaveSettingsToConfig())
+                return false;
+            SaveKeybindsToConfig();
+            _config.Save();
+            RefreshSettingsSummary();
+            return true;
+        }
+
+        private void RefreshSettingsSummary()
+        {
+            var parts = new List<string>();
+            if (DisplayOptions.IsRendererFallback(_config))
+                parts.Add("D3D12 fallback");
+            else
+            {
+                int width, height;
+                parts.Add(DisplayOptions.TryParseResolution(_config.RenderResolution, out width, out height)
+                    ? DisplayOptions.FormatResolution(width, height)
+                    : DisplayOptions.NativeResolution(_displayAspect));
+            }
+            parts.Add(DisplayOptions.FrameRateFor(_config, _displayAspect) + " FPS");
+            if (_config.Smaa)
+                parts.Add("SMAA");
+            if (!_config.Fullscreen)
+                parts.Add("Windowed");
+            SettingsSummaryText.Text = string.Join("  \u00B7  ", parts);
+        }
+
         private void InstallDlc_Click(object sender, RoutedEventArgs e)
         {
             var dialog = new Microsoft.Win32.OpenFileDialog
@@ -1236,11 +1307,19 @@ namespace DantesInferno.Launcher
                   "\n  " + string.Join("\n  ", dlcNames)
                 : LauncherLocalizer.Get(_launcherLanguage, LauncherLocalizer.DlcFolderEmpty));
 
-            parts.Add(File.Exists(tuPath)
+            bool tuReady = File.Exists(tuPath) || File.Exists(PathHelper.GetBundledTitleUpdatePath(_installDir));
+            string tuText = tuReady
                 ? LauncherLocalizer.Get(_launcherLanguage, LauncherLocalizer.TuInstalled)
-                : LauncherLocalizer.Get(_launcherLanguage, LauncherLocalizer.TuNotFound));
+                : LauncherLocalizer.Get(_launcherLanguage, LauncherLocalizer.TuNotFound);
+            parts.Add(tuText);
 
             DlcStatusText.Text = string.Join("\n", parts);
+            StatusTuText.Text = tuText;
+            StatusTuDot.Fill = (Brush)FindResource(tuReady ? "SuccessBrush" : "DangerBrush");
+            StatusDlcText.Text = dlcNames.Count > 0
+                ? LauncherLocalizer.Get(_launcherLanguage, LauncherLocalizer.DlcFolderFound, dlcNames.Count)
+                : LauncherLocalizer.Get(_launcherLanguage, LauncherLocalizer.DlcFolderEmpty);
+            StatusDlcDot.Fill = (Brush)FindResource(dlcNames.Count > 0 ? "SuccessBrush" : "TextMutedBrush");
         }
 
         private void ApplyRecommended_Click(object sender, RoutedEventArgs e)
@@ -1255,7 +1334,7 @@ namespace DantesInferno.Launcher
             _config.Fullscreen = true;
             _config.InputBackend = "sdl";
             PopulateControls();
-            MessageBox.Show("Recommended settings applied. Click Save Settings to keep them.", "Recommended",
+            MessageBox.Show("Recommended settings applied.", "Recommended",
                 MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
