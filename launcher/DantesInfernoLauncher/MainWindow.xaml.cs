@@ -878,22 +878,70 @@ namespace DantesInferno.Launcher
 
             var result = MessageBox.Show(message, "Game Crashed", MessageBoxButton.OKCancel, MessageBoxImage.Error);
             if (result == MessageBoxResult.OK)
-            {
-                try
-                {
-                    if (Directory.Exists(logsDir))
-                        Process.Start(new ProcessStartInfo("explorer.exe", "\"" + logsDir + "\"") { UseShellExecute = true });
-                    else
-                        Process.Start(new ProcessStartInfo("explorer.exe", "\"" + _installDir + "\"") { UseShellExecute = true });
-                }
-                catch { }
+                OpenProblemReport();
+        }
 
-                try
+        private void ReportProblem_Click(object sender, RoutedEventArgs e)
+        {
+            OpenProblemReport();
+        }
+
+        private void OpenProblemReport()
+        {
+            string logsDir = PathHelper.GetLogsPath(_installDir);
+            string zip = Path.Combine(logsDir, "report.zip");
+            bool zipped = false;
+            try
+            {
+                var logs = Directory.Exists(logsDir)
+                    ? Directory.GetFiles(logsDir, "*.log")
+                        .OrderByDescending(f => File.GetLastWriteTime(f))
+                        .Take(3)
+                        .Select(Path.GetFileName)
+                        .ToList()
+                    : new List<string>();
+                if (logs.Count > 0)
                 {
-                    Process.Start(new ProcessStartInfo(IssuesUrl) { UseShellExecute = true });
+                    if (File.Exists(zip))
+                        File.Delete(zip);
+                    var psi = new ProcessStartInfo
+                    {
+                        FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "tar.exe"),
+                        Arguments = "-a -c -f report.zip " + string.Join(" ", logs.Select(l => "\"" + l + "\"")),
+                        WorkingDirectory = logsDir,
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                    };
+                    using (var process = Process.Start(psi))
+                    {
+                        process.WaitForExit(10000);
+                        zipped = process.HasExited && process.ExitCode == 0 && File.Exists(zip);
+                    }
                 }
-                catch { }
             }
+            catch { }
+
+            try
+            {
+                if (zipped)
+                    Process.Start(new ProcessStartInfo("explorer.exe", "/select,\"" + zip + "\"") { UseShellExecute = true });
+                else if (Directory.Exists(logsDir))
+                    Process.Start(new ProcessStartInfo("explorer.exe", "\"" + logsDir + "\"") { UseShellExecute = true });
+                else
+                    Process.Start(new ProcessStartInfo("explorer.exe", "\"" + _installDir + "\"") { UseShellExecute = true });
+            }
+            catch { }
+
+            try
+            {
+                Process.Start(new ProcessStartInfo(IssuesUrl + "/new") { UseShellExecute = true });
+            }
+            catch { }
+
+            MessageBox.Show(zipped
+                    ? "Your latest logs are in report.zip (selected in the folder that just opened).\n\nDrag it into the GitHub issue and describe what happened."
+                    : "Attach the newest .log file from the folder that just opened to the GitHub issue and describe what happened.",
+                "Report a Problem", MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
         private void ExitButton_Click(object sender, RoutedEventArgs e)
