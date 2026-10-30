@@ -902,28 +902,35 @@ namespace DantesInferno.Launcher
             Task.Factory.StartNew(new Action(() =>
             {
                 int exitCode = -1;
-                try
+                bool started = false;
+                var errors = new List<string>();
+                var attempts = new[]
                 {
-                    var psi = new ProcessStartInfo
+                    new ProcessStartInfo { FileName = exePath, Arguments = arguments, WorkingDirectory = _installDir, UseShellExecute = false },
+                    new ProcessStartInfo { FileName = exePath, Arguments = arguments, WorkingDirectory = _installDir, UseShellExecute = true },
+                    new ProcessStartInfo { FileName = Path.GetFileName(exePath), Arguments = arguments, WorkingDirectory = _installDir, UseShellExecute = true },
+                };
+                foreach (var psi in attempts)
+                {
+                    try
                     {
-                        FileName = exePath,
-                        Arguments = arguments,
-                        WorkingDirectory = _installDir,
-                        UseShellExecute = false,
-                    };
-
-                    using (var process = Process.Start(psi))
-                    {
-                        process.WaitForExit();
-                        exitCode = process.ExitCode;
+                        using (var process = Process.Start(psi))
+                        {
+                            if (process == null)
+                            {
+                                errors.Add("no process returned");
+                                continue;
+                            }
+                            started = true;
+                            process.WaitForExit();
+                            exitCode = process.ExitCode;
+                        }
+                        break;
                     }
-                }
-                catch (Exception ex)
-                {
-                    Dispatcher.Invoke(new Action(() =>
+                    catch (Exception ex)
                     {
-                        MessageBox.Show("Failed to start the game:\n" + ex.Message, "Launch Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                    }));
+                        errors.Add(ex.Message);
+                    }
                 }
 
                 Dispatcher.Invoke(new Action(() =>
@@ -931,10 +938,33 @@ namespace DantesInferno.Launcher
                     _gameRunning = false;
                     PlayButton.IsEnabled = true;
 
-                    if (exitCode != 0)
+                    if (!started)
+                        ShowLaunchFailed(exePath, arguments, errors);
+                    else if (exitCode != 0)
                         ShowCrashDialog(exitCode);
                 }));
             }));
+        }
+
+        private void ShowLaunchFailed(string exePath, string arguments, List<string> errors)
+        {
+            string message = "The launcher could not start the game:\n" + string.Join("\n", errors.Distinct()) +
+                "\n\nThis happens on Linux / Steam Deck (Proton), which is not officially supported yet. " +
+                "You can start dantes_inferno.exe directly with the launcher's settings instead: add it to Steam " +
+                "and paste the launch options into its properties.\n\nCopy the launch options to the clipboard?";
+            if (MessageBox.Show(message, "Launch Error", MessageBoxButton.YesNo, MessageBoxImage.Error) != MessageBoxResult.Yes)
+                return;
+            try
+            {
+                Clipboard.SetText(arguments);
+                MessageBox.Show("Launch options copied. Game executable:\n" + exePath, "Launch Error",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Copying failed: " + ex.Message + "\n\nLaunch options:\n" + arguments, "Launch Error",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
         }
 
         private void ShowCrashDialog(int exitCode)
