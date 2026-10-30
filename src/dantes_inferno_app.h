@@ -31,6 +31,7 @@
 #include <rex/ui/imgui_dialog.h>
 #include <rex/ui/keybinds.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -494,6 +495,22 @@ class DantesInfernoApp : public rex::ReXApp {
     for (auto& pkg : packages) {
       auto rel = std::filesystem::relative(pkg, root).string();
       if (installed.count(rel)) continue;
+
+      std::array<uint8_t, 0x364> header{};
+      std::ifstream file(pkg, std::ios::binary);
+      file.read(reinterpret_cast<char*>(header.data()), header.size());
+      auto be32 = [&](size_t offset) {
+        return uint32_t(header[offset]) << 24 | uint32_t(header[offset + 1]) << 16 |
+               uint32_t(header[offset + 2]) << 8 | uint32_t(header[offset + 3]);
+      };
+      const std::string magic(reinterpret_cast<const char*>(header.data()), 4);
+      if (file.gcount() != std::streamsize(header.size()) ||
+          (magic != "LIVE" && magic != "PIRS" && magic != "CON ") || be32(0x344) != 0x2 ||
+          be32(0x360) != 0x454108CF) {
+        REXLOG_INFO("Not Dante's Inferno DLC, skipped: {} (content type {:08X}, title {:08X})",
+                    rel, be32(0x344), be32(0x360));
+        continue;
+      }
 
       REXLOG_INFO("Installing DLC package: {}", rel);
       auto result = content_manager->InstallContent(pkg);

@@ -260,6 +260,7 @@ namespace DantesInferno.Launcher
             DlcTitleText.Text = Lt(LauncherLocalizer.DlcTitle);
             DlcDescriptionText.Text = Lt(LauncherLocalizer.DlcDescription);
             OpenDlcFolderButton.Content = Lt(LauncherLocalizer.OpenDlcFolder);
+            InstallDlcButton.Content = Lt(LauncherLocalizer.InstallDlc);
             OpenTuFolderButton.Content = Lt(LauncherLocalizer.OpenTuFolder);
             OpenTuFolderButton.ToolTip = Lt(LauncherLocalizer.TuFolderTooltip);
 
@@ -1028,6 +1029,81 @@ namespace DantesInferno.Launcher
             Close();
         }
 
+        private void InstallDlc_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new Microsoft.Win32.OpenFileDialog
+            {
+                Title = Lt(LauncherLocalizer.InstallDlc),
+                Multiselect = true,
+                Filter = "DLC packages and archives|*.*",
+            };
+            if (dialog.ShowDialog(this) == true)
+                InstallDlc(dialog.FileNames);
+        }
+
+        private void DlcTab_DragOver(object sender, DragEventArgs e)
+        {
+            e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
+            e.Handled = true;
+        }
+
+        private void DlcTab_Drop(object sender, DragEventArgs e)
+        {
+            var paths = e.Data.GetData(DataFormats.FileDrop) as string[];
+            if (paths != null && paths.Length > 0)
+                InstallDlc(paths);
+        }
+
+        private void InstallDlc(string[] paths)
+        {
+            if (_gameRunning)
+            {
+                MessageBox.Show("Close the game before installing DLC.", "Install DLC", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+            string dlcRoot = PathHelper.GetDlcPath(_installDir);
+            InstallDlcButton.IsEnabled = false;
+            PlayButton.IsEnabled = false;
+            DlcStatusText.Text = "Checking DLC packages...";
+            Task.Factory.StartNew(() => DlcInstaller.Install(paths, dlcRoot)).ContinueWith(task =>
+            {
+                InstallDlcButton.IsEnabled = true;
+                PlayButton.IsEnabled = !_gameRunning;
+                RefreshDlcStatus();
+                if (task.Exception != null)
+                {
+                    MessageBox.Show("Installing DLC failed:\n" + task.Exception.GetBaseException().Message, "Install DLC",
+                        MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+                ShowDlcInstallResult(task.Result);
+            }, TaskScheduler.FromCurrentSynchronizationContext());
+        }
+
+        private void ShowDlcInstallResult(DlcInstallResult result)
+        {
+            var text = new StringBuilder();
+            if (result.Installed.Count > 0)
+                text.AppendLine("Installed:\n  " + string.Join("\n  ", result.Installed) + "\n");
+            if (result.AlreadyInstalled.Count > 0)
+                text.AppendLine("Already installed:\n  " + string.Join("\n  ", result.AlreadyInstalled) + "\n");
+            if (result.Skipped.Count > 0)
+                text.AppendLine("Skipped:\n  " + string.Join("\n  ", result.Skipped) + "\n");
+            if (result.Errors.Count > 0)
+                text.AppendLine("Problems:\n  " + string.Join("\n  ", result.Errors) + "\n");
+            if (result.UnknownFiles > 0)
+                text.AppendLine(result.UnknownFiles + " file(s) were not Xbox 360 packages and were ignored. " +
+                    "DLC must be the original package files (names like 23471E7296C26144C5E0...), not folders extracted from them.\n");
+            if (result.Installed.Count == 0 && result.AlreadyInstalled.Count == 0)
+                text.AppendLine("No Dante's Inferno DLC was found in what you selected.");
+            else if (result.Installed.Count > 0)
+                text.AppendLine("The game installs new DLC the next time it starts.");
+            if (result.Installed.Concat(result.AlreadyInstalled).Any(n => n.IndexOf("Lucia", StringComparison.OrdinalIgnoreCase) >= 0))
+                text.AppendLine("\nTrials of St. Lucia installs, but its arena mode is not playable in the port yet.");
+            MessageBox.Show(text.ToString().TrimEnd(), "Install DLC", MessageBoxButton.OK,
+                result.Errors.Count > 0 ? MessageBoxImage.Warning : MessageBoxImage.Information);
+        }
+
         private void OpenDlcFolder_Click(object sender, RoutedEventArgs e)
         {
             string dlcPath = PathHelper.GetDlcPath(_installDir);
@@ -1067,18 +1143,19 @@ namespace DantesInferno.Launcher
 
             var parts = new List<string>();
 
-            int dlcCount = 0;
-            if (Directory.Exists(dlcPath))
+            var dlcNames = new List<string>();
+            try
             {
-                try
-                {
-                    dlcCount = Directory.GetFiles(dlcPath, "*", SearchOption.AllDirectories)
-                        .Count(f => !Path.GetFileName(f).Equals(".installed", StringComparison.OrdinalIgnoreCase));
-                }
-                catch { }
+                dlcNames = DlcInstaller.ListInstalled(dlcPath)
+                    .Select(p => string.IsNullOrEmpty(p.DisplayName) ? Path.GetFileName(p.Path) : p.DisplayName)
+                    .Distinct()
+                    .OrderBy(n => n)
+                    .ToList();
             }
-            parts.Add(dlcCount > 0
-                ? LauncherLocalizer.Get(_launcherLanguage, LauncherLocalizer.DlcFolderFound, dlcCount)
+            catch { }
+            parts.Add(dlcNames.Count > 0
+                ? LauncherLocalizer.Get(_launcherLanguage, LauncherLocalizer.DlcFolderFound, dlcNames.Count) +
+                  "\n  " + string.Join("\n  ", dlcNames)
                 : LauncherLocalizer.Get(_launcherLanguage, LauncherLocalizer.DlcFolderEmpty));
 
             parts.Add(File.Exists(tuPath)
