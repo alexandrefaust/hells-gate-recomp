@@ -71,12 +71,13 @@ Source: "..\tools\extract-xiso\extract-xiso.exe"; DestDir: "{tmp}"; Flags: delet
 ; The launcher's ISO import, when game\default.xex is missing.
 Source: "..\tools\extract-xiso\extract-xiso.exe"; DestDir: "{app}"; Flags: ignoreversion
 
-; Title Update 2, needed for playable DLC such as Trials of Saint Lucia; the
-; game applies default.xexp found next to default.xex.
+; Title Update 2; the launcher copies tu\default.xexp into the game data folder.
 #define TuPath GameBuildDir + "\default.xexp"
-#if FileExists(TuPath)
-Source: "{#TuPath}"; DestDir: "{app}\game"; Flags: ignoreversion
+#if !FileExists(TuPath)
+  #error default.xexp (TU2) is missing from GameBuildDir; the game cannot start without it.
 #endif
+Source: "{#TuPath}"; DestDir: "{app}\game"; Flags: ignoreversion
+Source: "{#TuPath}"; DestDir: "{app}\tu"; Flags: ignoreversion
 
 ; Recorded shaders and pipelines (tools\pipeline_storage_merge.py), built at
 ; launch so effects don't compile mid-game.

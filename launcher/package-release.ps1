@@ -75,8 +75,8 @@ $tuDst = Join-Path $GameBuildDir "default.xexp"
 if (Test-Path $tuSrc) {
     Copy-Item $tuSrc $tuDst -Force
     Write-Host "Copied default.xexp (TU2 patch) to build output"
-} else {
-    Write-Warning "default.xexp not found at $tuSrc - TU2 will not be bundled with the installer."
+} elseif (-not (Test-Path $tuDst)) {
+    Write-Error "default.xexp (TU2) not found at $tuSrc or in $GameBuildDir - the game cannot start without it."
 }
 
 $extractXiso = Join-Path $root "..\tools\extract-xiso\extract-xiso.exe"
@@ -122,7 +122,9 @@ foreach ($f in @("DantesInfernoLauncher.exe", "DantesInferno.Shared.dll", "versi
     Copy-Item (Join-Path $launcherBin $f) $staging
 }
 Copy-Item (Join-Path $root "icon.ico"), (Join-Path $root "banner.jpg"), $extractXiso $staging
-if (Test-Path $tuDst) { Copy-Item $tuDst (Join-Path $staging "game") }
+New-Item -ItemType Directory -Path (Join-Path $staging "tu") -Force | Out-Null
+Copy-Item $tuDst (Join-Path $staging "game")
+Copy-Item $tuDst (Join-Path $staging "tu")
 $shaderList = Join-Path $root "..\shader-list\dante_pipelines.bin"
 if (Test-Path $shaderList) {
     Copy-Item $shaderList $staging

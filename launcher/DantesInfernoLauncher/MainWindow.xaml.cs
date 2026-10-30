@@ -709,6 +709,8 @@ namespace DantesInferno.Launcher
                 bool imported = File.Exists(Path.Combine(gameData, "default.xex"));
                 Dispatcher.Invoke(new Action(() =>
                 {
+                    if (imported)
+                        EnsureTitleUpdate(gameData);
                     PlayButton.IsEnabled = true;
                     PlayNoteText.Text = imported ? Lt(LauncherLocalizer.ImportIsoDone) : "";
                     if (!imported)
@@ -720,6 +722,52 @@ namespace DantesInferno.Launcher
                     RefreshPlayStatus();
                 }));
             }));
+        }
+
+        // The recompiled code needs TU2; no other default.xexp matches it.
+        private bool EnsureTitleUpdate(string gameData)
+        {
+            string target = PathHelper.GetTitleUpdatePath(gameData);
+            string source = PathHelper.GetBundledTitleUpdatePath(_installDir);
+            if (!File.Exists(source))
+            {
+                // Installs from before tu\ only have the copy in game\.
+                string local = PathHelper.GetTitleUpdatePath(PathHelper.GetGameDataPath(_installDir));
+                source = File.Exists(local) ? local : null;
+            }
+            try
+            {
+                if (source != null && !SameFile(source, target))
+                    File.Copy(source, target, true);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("The Title Update (default.xexp) could not be copied to the game data folder:\n" +
+                    gameData + "\n\n" + ex.Message, "Missing Title Update", MessageBoxButton.OK, MessageBoxImage.Error);
+                return false;
+            }
+            RefreshDlcStatus();
+            if (File.Exists(target))
+                return true;
+            MessageBox.Show("The Title Update (default.xexp) is missing from the game data folder:\n" + gameData +
+                "\n\nThe game cannot start without it. Download the release again; it is in the tu folder.",
+                "Missing Title Update", MessageBoxButton.OK, MessageBoxImage.Error);
+            return false;
+        }
+
+        private static bool SameFile(string a, string b)
+        {
+            if (string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (!File.Exists(b) || new FileInfo(a).Length != new FileInfo(b).Length)
+                return false;
+            using (var sha = System.Security.Cryptography.SHA1.Create())
+            {
+                byte[] ha, hb;
+                using (var s = File.OpenRead(a)) ha = sha.ComputeHash(s);
+                using (var s = File.OpenRead(b)) hb = sha.ComputeHash(s);
+                return ha.SequenceEqual(hb);
+            }
         }
 
         private void PlayButton_Click(object sender, RoutedEventArgs e)
@@ -743,6 +791,9 @@ namespace DantesInferno.Launcher
                 OfferIsoImport(gameData);
                 return;
             }
+
+            if (!EnsureTitleUpdate(gameData))
+                return;
 
             if (!SaveSettingsToConfig())
                 return;
@@ -868,7 +919,7 @@ namespace DantesInferno.Launcher
 
         private void OpenTuFolder_Click(object sender, RoutedEventArgs e)
         {
-            string gameDir = PathHelper.GetGameDataPath(_installDir);
+            string gameDir = _config.GameDataRoot ?? PathHelper.GetGameDataPath(_installDir);
             try
             {
                 if (!Directory.Exists(gameDir))
@@ -885,7 +936,7 @@ namespace DantesInferno.Launcher
         private void RefreshDlcStatus()
         {
             string dlcPath = PathHelper.GetDlcPath(_installDir);
-            string tuPath = PathHelper.GetTitleUpdatePath(_installDir);
+            string tuPath = PathHelper.GetTitleUpdatePath(_config.GameDataRoot ?? PathHelper.GetGameDataPath(_installDir));
 
             var parts = new List<string>();
 
