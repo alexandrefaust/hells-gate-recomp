@@ -1592,6 +1592,7 @@ std::vector<Edit> FindGlyphs(const Image& img, uint64_t content_hash) {
     Edit edit;
     if (FindSphere(img, c, edit) || FindPlate(img, c, edit)) edits.push_back(edit);
   }
+  if (edits.size() == 1 && edits[0].kind == Edit::Kind::kSphere) edits.clear();
   return edits;
 }
 
