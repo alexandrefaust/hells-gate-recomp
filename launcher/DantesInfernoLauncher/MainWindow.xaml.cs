@@ -886,6 +886,85 @@ namespace DantesInferno.Launcher
             OpenProblemReport();
         }
 
+        private void ExportSaves_Click(object sender, RoutedEventArgs e)
+        {
+            var roots = new List<KeyValuePair<string, string>>
+            {
+                new KeyValuePair<string, string>("Portable", PathHelper.GetPortableDataPath(_installDir)),
+                new KeyValuePair<string, string>("Documents", PathHelper.GetDocumentsDataPath()),
+                new KeyValuePair<string, string>("LocalAppData", Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "dantes_inferno")),
+            };
+            var profiles = new List<KeyValuePair<string, string>>();
+            foreach (var root in roots)
+            {
+                if (!Directory.Exists(root.Value))
+                    continue;
+                foreach (string dir in Directory.GetDirectories(root.Value))
+                {
+                    string name = Path.GetFileName(dir);
+                    if (name.Length == 16 && name != "0000000000000000" &&
+                        name.All(c => Uri.IsHexDigit(c)))
+                        profiles.Add(new KeyValuePair<string, string>(root.Key, dir));
+                }
+            }
+            if (profiles.Count == 0)
+            {
+                MessageBox.Show("No save files were found.", "Export Saves", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var dialog = new Microsoft.Win32.SaveFileDialog
+            {
+                Title = "Export Saves",
+                FileName = "dantes_inferno_saves_" + DateTime.Now.ToString("yyyyMMdd_HHmm", CultureInfo.InvariantCulture) + ".zip",
+                Filter = "Zip archive (*.zip)|*.zip",
+                InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+            };
+            if (dialog.ShowDialog(this) != true)
+                return;
+            string zip = dialog.FileName;
+
+            string staging = Path.Combine(Path.GetTempPath(), "dantes_inferno_saves_" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                foreach (var profile in profiles)
+                    CopyDirectory(profile.Value, Path.Combine(staging, profile.Key, Path.GetFileName(profile.Value)));
+                if (File.Exists(zip))
+                    File.Delete(zip);
+                var psi = new ProcessStartInfo
+                {
+                    FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "tar.exe"),
+                    Arguments = "-a -c -f \"" + zip + "\" " + string.Join(" ",
+                        profiles.Select(p => p.Key).Distinct().Select(k => "\"" + k + "\"")),
+                    WorkingDirectory = staging,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                };
+                using (var process = Process.Start(psi))
+                {
+                    process.WaitForExit();
+                    if (process.ExitCode != 0 || !File.Exists(zip))
+                        throw new IOException("tar exited with code " + process.ExitCode);
+                }
+                Process.Start(new ProcessStartInfo("explorer.exe", "/select,\"" + zip + "\"") { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("The saves could not be exported:\n" + ex.Message, "Export Saves",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                try
+                {
+                    if (Directory.Exists(staging))
+                        Directory.Delete(staging, true);
+                }
+                catch { }
+            }
+        }
+
         private void OpenProblemReport()
         {
             string logsDir = PathHelper.GetLogsPath(_installDir);

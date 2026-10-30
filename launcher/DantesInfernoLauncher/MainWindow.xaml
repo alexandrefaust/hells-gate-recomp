@@ -38,6 +38,7 @@
                         <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Left" Margin="0,10,0,0">
                             <Button x:Name="SupportButton" Content="Support the Developer" Click="SupportButton_Click" />
                             <Button x:Name="ReportProblemButton" Content="Report a Problem" Margin="10,0,0,0" Click="ReportProblem_Click" />
+                            <Button x:Name="ExportSavesButton" Content="Export Saves" Margin="10,0,0,0" Click="ExportSaves_Click" />
                         </StackPanel>
                         <TextBlock x:Name="VersionText" Grid.Row="3" Text="Version: 0.6.3-beta" FontSize="12" Opacity="0.7" HorizontalAlignment="Right" />
                     </Grid>
